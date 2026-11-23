@@ -53,6 +53,7 @@ android {
 
     buildTypes {
         release {
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Use the permanent release key when present; otherwise fall back to
             // debug signing so `flutter run --release` still works on other machines.
             signingConfig = if (keystoreProperties.containsKey("storeFile")) {
