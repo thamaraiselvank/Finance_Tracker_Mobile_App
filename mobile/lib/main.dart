@@ -7,11 +7,22 @@ import 'core/theme.dart';
 import 'screens/auth_screen.dart';
 import 'screens/home_shell.dart';
 import 'screens/onboarding_screen.dart';
+import 'services/remote/remote_services.dart';
+import 'services/services.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  final state = AppState(ApiClient())..bootstrap();
-  runApp(ChangeNotifierProvider.value(value: state, child: const FinverseApp()));
+  // The one place that decides where data comes from. Swapping these
+  // implementations for local (SQLite) ones needs no screen changes.
+  final services = remoteServices(ApiClient());
+  final state = AppState(services.auth)..bootstrap();
+  runApp(MultiProvider(
+    providers: [
+      Provider<Services>.value(value: services),
+      ChangeNotifierProvider<AppState>.value(value: state),
+    ],
+    child: const FinverseApp(),
+  ));
 }
 
 class FinverseApp extends StatelessWidget {

@@ -74,18 +74,13 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
       _period == _Period.month ? DateTime(_anchor.year, _anchor.month + delta) : DateTime(_anchor.year + delta, 1);
 
   Future<_PeriodData> _load() async {
-    final api = context.api;
+    final transactions = context.services.transactions;
     final (start, end) = _range(_anchor);
     final (prevStart, prevEnd) = _range(_shifted(-1));
-    final results = await Future.wait([
-      // Load the whole period once; filtering and totals happen on the phone.
-      api.get('/transactions', query: {'start_date': apiDate(start), 'end_date': apiDate(end), 'limit': 10000}),
-      api.get('/transactions/summary', query: {'start_date': apiDate(prevStart), 'end_date': apiDate(prevEnd)}).catchError((_) => <String, dynamic>{}),
-    ]);
-    return _PeriodData(
-      (results[0] as List).map((e) => Map<String, dynamic>.from(e)).toList(),
-      Map<String, dynamic>.from(results[1] as Map),
-    );
+    // Load the whole period once; filtering and totals happen on the phone.
+    final items = transactions.list(start: start, end: end, limit: 10000);
+    final previous = transactions.summary(start: prevStart, end: prevEnd).catchError((_) => <String, dynamic>{});
+    return _PeriodData(await items, await previous);
   }
 
   void _reload() => _viewKey.currentState?.reload();
@@ -270,7 +265,7 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
                   context,
                   items: items,
                   what: _hasFilters ? 'shown transactions in $_periodLabel' : 'transactions in $_periodLabel',
-                  pathFor: (t) => '/transactions/${t['id']}',
+                  deleteItem: (t) => context.services.transactions.delete(t['id'].toString()),
                   extraWarning: 'Account balances will be adjusted to reverse these transactions.'
                       '${_hasFilters ? ' Only the transactions matching your current filters will be deleted.' : ''}',
                   onDone: _reload,

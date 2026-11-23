@@ -73,7 +73,29 @@ flutter run
 | `core/api_client.dart` | HTTP client, bearer token, automatic token refresh |
 | `core/app_state.dart` | Signed-in user, theme, hide-amounts, sign in/out |
 | `core/format.dart` | Currency (₹ lakh/crore), dates, JSON number helpers |
+| `services/services.dart` | The data layer: one interface per area (accounts, transactions, goals, tax…). Screens only talk to these, via `context.services` |
+| `services/remote/` | Current implementations, which call the backend. They are being replaced one by one with local (SQLite) versions |
 | `screens/` | Auth, onboarding, Home, Money, Wealth, Goals, Debts, Insurance, AI advisor, Calculators, Profile |
 | `widgets/` | Shared UI: stat tiles, forms, empty/error states |
 
+Which implementation is used is decided in one place, `main.dart`.
+
 Login tokens are stored with `flutter_secure_storage` (Android Keystore / iOS Keychain).
+
+## Python → Dart parity tests
+
+The backend's logic is being rewritten in Dart so the app can run fully on the
+phone. To prove the Dart version gives the same answers:
+
+1. `tools/parity/generate_fixtures.py` runs the real backend code on sample
+   inputs (including invalid ones) and saves inputs plus results to
+   `mobile/test/parity/fixtures/*.json`.
+2. Dart tests in `mobile/test/parity/` run the same inputs through the Dart
+   code and fail with the exact field that differs.
+
+Regenerate fixtures after changing backend logic or adding cases:
+
+```powershell
+python tools/parity/generate_fixtures.py
+cd mobile; flutter test
+```

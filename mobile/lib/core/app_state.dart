@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
+import '../services/services.dart';
 import 'api_client.dart';
 import 'format.dart';
 
@@ -10,11 +11,11 @@ enum AuthStatus { loading, signedOut, signedIn }
 
 /// Holds the signed-in user, session state and app-wide preferences.
 class AppState extends ChangeNotifier {
-  AppState(this.api) {
-    api.onSessionExpired = _handleSessionExpired;
+  AppState(this.auth) {
+    auth.onSessionExpired = _handleSessionExpired;
   }
 
-  final ApiClient api;
+  final AuthService auth;
   final _storage = const FlutterSecureStorage();
 
   static const _userKey = 'finverse_user';
@@ -48,9 +49,9 @@ class AppState extends ChangeNotifier {
       _ => ThemeMode.system,
     };
 
-    await api.loadTokens();
+    final hasSession = await auth.restoreSession();
     final cachedUser = await _storage.read(key: _userKey);
-    if (!api.hasSession || cachedUser == null) {
+    if (!hasSession || cachedUser == null) {
       status = AuthStatus.signedOut;
       notifyListeners();
       return;
@@ -69,44 +70,32 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> refreshUser() async {
-    final data = await api.get('/auth/me');
-    await _setUser(Map<String, dynamic>.from(data));
+    await _setUser(await auth.currentUser());
   }
 
   Future<void> login(String usernameOrEmail, String password) async {
-    final data = await api.post('/auth/login', body: {
-      'username_or_email': usernameOrEmail.trim(),
-      'password': password,
-    });
-    await _completeSignIn(data);
+    await _completeSignIn(await auth.login(usernameOrEmail, password));
   }
 
   Future<void> register(Map<String, dynamic> payload) async {
-    final data = await api.post('/auth/register', body: payload);
-    await _completeSignIn(data);
+    await _completeSignIn(await auth.register(payload));
   }
 
-  Future<void> _completeSignIn(dynamic data) async {
-    await api.saveTokens(access: data['access_token'], refresh: data['refresh_token']);
+  Future<void> _completeSignIn(Map<String, dynamic> signedInUser) async {
     sessionMessage = null;
     status = AuthStatus.signedIn;
-    await _setUser(Map<String, dynamic>.from(data['user']));
+    await _setUser(signedInUser);
   }
 
   Future<void> updateProfile(Map<String, dynamic> changes) async {
-    final data = await api.put('/auth/me', body: changes);
-    await _setUser(Map<String, dynamic>.from(data));
+    await _setUser(await auth.updateProfile(changes));
   }
 
-  Future<void> changePassword(String oldPassword, String newPassword) async {
-    await api.post('/auth/change-password', body: {
-      'old_password': oldPassword,
-      'new_password': newPassword,
-    });
-  }
+  Future<void> changePassword(String oldPassword, String newPassword) =>
+      auth.changePassword(oldPassword, newPassword);
 
   Future<void> signOut() async {
-    await api.clearTokens();
+    await auth.signOut();
     await _storage.delete(key: _userKey);
     user = null;
     status = AuthStatus.signedOut;

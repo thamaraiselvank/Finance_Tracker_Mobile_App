@@ -73,20 +73,19 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   Future<DashboardData> _load() async {
-    final api = context.api;
-    // Each section degrades gracefully if its endpoint fails, like the web app.
-    Future<Map<String, dynamic>> safe(String path) async {
+    final s = context.services;
+    // Each section degrades gracefully if it fails, like the web app.
+    Future<Map<String, dynamic>> safe(Future<Map<String, dynamic>> f) async {
       try {
-        final data = await api.get(path);
-        return data is Map ? Map<String, dynamic>.from(data) : {};
+        return await f;
       } catch (_) {
         return {};
       }
     }
 
-    Future<List<Map<String, dynamic>>> safeList(Future<dynamic> f) async {
+    Future<List<Map<String, dynamic>>> safeList(Future<List<Map<String, dynamic>>> f) async {
       try {
-        return ((await f) as List).map((e) => Map<String, dynamic>.from(e)).toList();
+        return await f;
       } catch (_) {
         return [];
       }
@@ -94,22 +93,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final now = DateTime.now();
     final results = await Future.wait<dynamic>([
-      api.get('/assets/summary').then((d) => Map<String, dynamic>.from(d)), // required: surfaces errors
-      safe('/transactions/summary'),
-      safe('/goals/summary/progress'),
-      safe('/debts/summary/overview'),
-      safe('/insurance/summary/overview'),
-      safeList(api.get('/transactions', query: {
-        'start_date': apiDate(DateTime(now.year, now.month, 1)),
-        'end_date': apiDate(DateTime(now.year, now.month + 1, 0)),
-        'type': 'EXPENSE',
-        'limit': 5000,
-      })),
-      safeList(api.get('/schedules/occurrences', query: {
-        'start_date': apiDate(DateTime(now.year, now.month, 1)),
-        'end_date': apiDate(now.add(const Duration(days: 7))),
-      })),
-      safe('/essentials/health-check'),
+      s.assets.summary(), // required: surfaces errors
+      safe(s.transactions.summary()),
+      safe(s.goals.progressSummary()),
+      safe(s.debts.summary()),
+      safe(s.insurance.summary()),
+      safeList(s.transactions.list(
+        start: DateTime(now.year, now.month, 1),
+        end: DateTime(now.year, now.month + 1, 0),
+        type: 'EXPENSE',
+        limit: 5000,
+      )),
+      safeList(s.schedules.occurrences(
+        start: DateTime(now.year, now.month, 1),
+        end: now.add(const Duration(days: 7)),
+      )),
+      safe(s.essentials.healthCheck()),
     ]);
     return DashboardData(results[0], results[1], results[2], results[3], results[4], results[5], results[6], results[7]);
   }

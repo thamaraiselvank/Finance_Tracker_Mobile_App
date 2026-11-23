@@ -58,7 +58,7 @@ class _ImportScreenState extends State<ImportScreen> {
 
   Future<void> _loadAccounts() async {
     try {
-      _accounts = (await context.api.get('/accounts') as List).map((e) => Map<String, dynamic>.from(e)).toList();
+      _accounts = await context.services.accounts.list();
       if (_accounts.length == 1) _accountId = _accounts.first['id'].toString();
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
@@ -98,16 +98,13 @@ class _ImportScreenState extends State<ImportScreen> {
     try {
       final bytes = await _file!.readAsBytes();
       if (!mounted) return;
-      final res = Map<String, dynamic>.from(await context.api.postFile(
-        '/import/parse-file',
+      final res = await context.services.imports.parseFile(
         bytes: bytes,
         filename: _file!.name,
-        fields: {
-          'import_type': _mode,
-          if (_isStocks) 'broker': _broker,
-          if (!_isStocks && _isPdf && _password.text.isNotEmpty) 'password': _password.text,
-        },
-      ));
+        importType: _mode,
+        broker: _isStocks ? _broker : null,
+        password: !_isStocks && _isPdf && _password.text.isNotEmpty ? _password.text : null,
+      );
       setState(() {
         _parsed = res;
         _rows = (res['preview'] as List? ?? []).map((e) => {...Map<String, dynamic>.from(e), 'included': true}).toList();
@@ -136,11 +133,9 @@ class _ImportScreenState extends State<ImportScreen> {
     }
     setState(() => _committing = true);
     try {
-      final res = await context.api.post('/import/commit-assets', body: {
-        'assets': [
-          for (final r in _included) Map<String, dynamic>.from(r)..remove('included')..remove('row_index'),
-        ],
-      });
+      final res = await context.services.imports.commitAssets([
+        for (final r in _included) Map<String, dynamic>.from(r)..remove('included')..remove('row_index'),
+      ]);
       if (!mounted) return;
       context.showSnack(res is Map && res['message'] != null ? res['message'].toString() : 'Holdings imported – see the Wealth tab');
       Navigator.pop(context, true);
@@ -163,22 +158,19 @@ class _ImportScreenState extends State<ImportScreen> {
     }
     setState(() => _committing = true);
     try {
-      final res = await context.api.post('/import/commit', body: {
-        'account_id': _accountId,
-        'transactions': [
-          for (final r in _included)
-            {
-              'date': r['date'],
-              if (r['time'] != null) 'time': r['time'],
-              'description': r['description'],
-              'amount': toDouble(r['amount']),
-              'type': (r['type'] as String).toUpperCase(),
-              if ((r['category'] ?? r['category_name']) != null) 'category': r['category'] ?? r['category_name'],
-              if (r['subcategory'] != null) 'subcategory': r['subcategory'],
-              if ((r['category_name'] ?? r['category']) != null) 'notes': r['category_name'] ?? r['category'],
-            },
-        ],
-      });
+      final res = await context.services.imports.commitTransactions(_accountId!, [
+        for (final r in _included)
+          {
+            'date': r['date'],
+            if (r['time'] != null) 'time': r['time'],
+            'description': r['description'],
+            'amount': toDouble(r['amount']),
+            'type': (r['type'] as String).toUpperCase(),
+            if ((r['category'] ?? r['category_name']) != null) 'category': r['category'] ?? r['category_name'],
+            if (r['subcategory'] != null) 'subcategory': r['subcategory'],
+            if ((r['category_name'] ?? r['category']) != null) 'notes': r['category_name'] ?? r['category'],
+          },
+      ]);
       if (!mounted) return;
       context.showSnack(res is Map && res['message'] != null ? res['message'].toString() : 'Import complete');
       Navigator.pop(context, true);

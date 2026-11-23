@@ -35,8 +35,9 @@ class _DebtsScreenState extends State<DebtsScreen> {
   final _viewKey = GlobalKey<AsyncViewState<_DebtsData>>();
 
   Future<_DebtsData> _load() async {
-    final results = await Future.wait([context.api.get('/debts/'), context.api.get('/debts/summary/overview')]);
-    return _DebtsData((results[0] as List).map((e) => Map<String, dynamic>.from(e)).toList(), Map<String, dynamic>.from(results[1]));
+    final debts = context.services.debts;
+    final r = await Future.wait<Object>([debts.list(), debts.summary()]);
+    return _DebtsData(r[0] as List<Map<String, dynamic>>, r[1] as Map<String, dynamic>);
   }
 
   Future<void> _openForm([Map<String, dynamic>? debt]) async {
@@ -100,7 +101,7 @@ class _DebtsScreenState extends State<DebtsScreen> {
                   context,
                   items: d.debts,
                   what: 'debts',
-                  pathFor: (x) => '/debts/${x['id']}',
+                  deleteItem: (x) => context.services.debts.delete(x['id'].toString()),
                   onDone: () => _viewKey.currentState?.reload(),
                 ),
               ),
@@ -126,12 +127,12 @@ class _PayoffPlanState extends State<_PayoffPlan> {
   @override
   void initState() {
     super.initState();
-    _future = context.api.get('/debts/strategy/$_strategy');
+    _future = context.services.debts.payoffPlan(_strategy);
   }
 
   void _set(String s) => setState(() {
         _strategy = s;
-        _future = context.api.get('/debts/strategy/$s');
+        _future = context.services.debts.payoffPlan(s);
       });
 
   @override
@@ -238,9 +239,9 @@ class _DebtFormState extends State<DebtForm> {
             if (!_isEdit) 'creditor_name': _creditor.text.trim().isEmpty ? null : _creditor.text.trim(),
           };
           if (_isEdit) {
-            await context.api.put('/debts/${widget.existing!['id']}', body: payload);
+            await context.services.debts.update(widget.existing!['id'].toString(), payload);
           } else {
-            await context.api.post('/debts/', body: payload);
+            await context.services.debts.create(payload);
           }
         },
       );
@@ -250,7 +251,7 @@ class _DebtFormState extends State<DebtForm> {
     if (!ok || !mounted) return;
     setState(() => _busy = true);
     try {
-      await context.api.delete('/debts/${widget.existing!['id']}');
+      await context.services.debts.delete(widget.existing!['id'].toString());
       if (!mounted) return;
       Navigator.pop(context, true);
       context.showSnack('Debt deleted');

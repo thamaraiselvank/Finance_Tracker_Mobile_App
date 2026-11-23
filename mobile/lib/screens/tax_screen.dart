@@ -69,7 +69,7 @@ class _TaxScreenState extends State<TaxScreen> {
       _loadError = null;
     });
     try {
-      final rules = Map<String, dynamic>.from(await context.api.get('/tax/rules'));
+      final rules = await context.services.tax.rules();
       _years = (rules['available_tax_years'] as List? ?? [rules['tax_year']]).map((e) => e.toString()).toList();
       _year = rules['tax_year']?.toString() ?? (_years.isNotEmpty ? _years.first : null);
       await _prefill();
@@ -82,7 +82,7 @@ class _TaxScreenState extends State<TaxScreen> {
   /// Suggest values from the user's own transactions, profile and policies.
   Future<void> _prefill() async {
     if (_year == null) return;
-    final profile = Map<String, dynamic>.from(await context.api.get('/tax/profile', query: {'tax_year': _year}));
+    final profile = await context.services.tax.profile(_year!);
     _currencyWarning = profile['currency_warning']?.toString();
     _sources.clear();
     final suggestions = Map<String, dynamic>.from(profile['suggestions'] ?? {});
@@ -106,8 +106,8 @@ class _TaxScreenState extends State<TaxScreen> {
         'tax_already_paid': toDouble(_taxPaid.text),
         for (final e in _controllers.entries) e.key: toDouble(e.value.text),
       };
-      final res = await context.api.post('/tax/estimate', body: body);
-      if (mounted) setState(() => _result = Map<String, dynamic>.from(res));
+      final res = await context.services.tax.estimate(body);
+      if (mounted) setState(() => _result = res);
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
     } finally {

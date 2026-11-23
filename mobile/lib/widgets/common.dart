@@ -2,14 +2,16 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
-import '../core/api_client.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
+import '../services/services.dart';
 
 /// Shortcuts for screens.
 extension AppContext on BuildContext {
   AppState get appState => read<AppState>();
-  ApiClient get api => read<AppState>().api;
+
+  /// The data layer. Screens use this instead of calling the API directly.
+  Services get services => read<Services>();
 
   void showSnack(String message, {bool error = false}) {
     ScaffoldMessenger.of(this)
@@ -569,21 +571,20 @@ class _ConfirmDeleteAllDialogState extends State<_ConfirmDeleteAllDialog> {
   }
 }
 
-/// Deletes each path (a few at a time) behind a progress dialog.
+/// Runs each delete (a few at a time) behind a progress dialog.
 /// Returns how many failed.
-Future<int> bulkDelete(BuildContext context, List<String> paths) async {
+Future<int> bulkDelete(BuildContext context, List<Future<void> Function()> deletes) async {
   final failed = await showDialog<int>(
     context: context,
     barrierDismissible: false,
-    builder: (_) => _BulkDeleteDialog(api: context.api, paths: paths),
+    builder: (_) => _BulkDeleteDialog(deletes: deletes),
   );
   return failed ?? 0;
 }
 
 class _BulkDeleteDialog extends StatefulWidget {
-  const _BulkDeleteDialog({required this.api, required this.paths});
-  final ApiClient api;
-  final List<String> paths;
+  const _BulkDeleteDialog({required this.deletes});
+  final List<Future<void> Function()> deletes;
 
   @override
   State<_BulkDeleteDialog> createState() => _BulkDeleteDialogState();
@@ -601,10 +602,10 @@ class _BulkDeleteDialogState extends State<_BulkDeleteDialog> {
 
   Future<void> _run() async {
     const batch = 5;
-    for (var i = 0; i < widget.paths.length; i += batch) {
-      await Future.wait(widget.paths.skip(i).take(batch).map((p) async {
+    for (var i = 0; i < widget.deletes.length; i += batch) {
+      await Future.wait(widget.deletes.skip(i).take(batch).map((deleteOne) async {
         try {
-          await widget.api.delete(p);
+          await deleteOne();
         } catch (_) {
           _failed++;
         }
@@ -616,7 +617,7 @@ class _BulkDeleteDialogState extends State<_BulkDeleteDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final total = widget.paths.length;
+    final total = widget.deletes.length;
     return PopScope(
       canPop: false,
       child: AlertDialog(
@@ -651,19 +652,19 @@ class DeleteAllButton extends StatelessWidget {
   }
 }
 
-/// Confirm, delete every item via [pathFor], report the result, then [onDone].
+/// Confirm, delete every item via [deleteItem], report the result, then [onDone].
 Future<void> deleteAllFlow<T>(
   BuildContext context, {
   required List<T> items,
   required String what,
-  required String Function(T) pathFor,
+  required Future<void> Function(T) deleteItem,
   required VoidCallback onDone,
   String? extraWarning,
 }) async {
   if (items.isEmpty) return;
   final ok = await confirmDeleteAll(context, count: items.length, what: what, extraWarning: extraWarning);
   if (!ok || !context.mounted) return;
-  final failed = await bulkDelete(context, items.map(pathFor).toList());
+  final failed = await bulkDelete(context, [for (final item in items) () => deleteItem(item)]);
   if (!context.mounted) return;
   context.showSnack(failed == 0 ? 'Deleted ${items.length} $what' : 'Deleted ${items.length - failed} $what; $failed could not be deleted', error: failed > 0);
   onDone();

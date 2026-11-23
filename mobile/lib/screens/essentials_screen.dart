@@ -22,7 +22,7 @@ class EssentialsScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(title: const Text('Financial health')),
       body: AsyncView<Map<String, dynamic>>(
-        load: () async => Map<String, dynamic>.from(await context.api.get('/essentials/health-check')),
+        load: () => context.services.essentials.healthCheck(),
         builder: (context, h, reload) {
           final state = context.watch<AppState>();
           final theme = Theme.of(context);

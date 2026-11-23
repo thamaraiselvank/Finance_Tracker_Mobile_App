@@ -35,7 +35,7 @@ class _WealthScreenState extends State<WealthScreen> {
   final _viewKey = GlobalKey<AsyncViewState<Map<String, dynamic>>>();
   bool _refreshingPrices = false;
 
-  Future<Map<String, dynamic>> _load() async => Map<String, dynamic>.from(await context.api.get('/assets/summary'));
+  Future<Map<String, dynamic>> _load() => context.services.assets.summary();
 
   Future<void> _openForm([Map<String, dynamic>? asset]) async {
     final saved = await showFormSheet<bool>(context, title: asset == null ? 'Add asset' : 'Edit asset', child: AssetForm(existing: asset));
@@ -46,7 +46,7 @@ class _WealthScreenState extends State<WealthScreen> {
     final ok = await confirmDeleteAll(context, count: count, what: 'assets', extraWarning: 'Bank account balances are not affected.');
     if (!ok || !mounted) return;
     try {
-      await context.api.delete('/assets/all');
+      await context.services.assets.deleteAll();
       if (!mounted) return;
       context.showSnack('Deleted all assets');
       _viewKey.currentState?.reload();
@@ -58,7 +58,7 @@ class _WealthScreenState extends State<WealthScreen> {
   Future<void> _refreshPrices() async {
     setState(() => _refreshingPrices = true);
     try {
-      final res = await context.api.post('/assets/refresh-prices');
+      final res = await context.services.assets.refreshPrices();
       if (!mounted) return;
       context.showSnack(res['message']?.toString() ?? 'Prices refreshed');
       _viewKey.currentState?.reload();
@@ -263,9 +263,9 @@ class _AssetFormState extends State<AssetForm> {
             'meta_data': meta,
           };
           if (_isEdit) {
-            await context.api.put('/assets/${widget.existing!['id']}', body: payload);
+            await context.services.assets.update(widget.existing!['id'].toString(), payload);
           } else {
-            await context.api.post('/assets', body: payload);
+            await context.services.assets.create(payload);
           }
         },
       );
@@ -275,7 +275,7 @@ class _AssetFormState extends State<AssetForm> {
     if (!ok || !mounted) return;
     setState(() => _busy = true);
     try {
-      await context.api.delete('/assets/${widget.existing!['id']}');
+      await context.services.assets.delete(widget.existing!['id'].toString());
       if (!mounted) return;
       Navigator.pop(context, true);
       context.showSnack('Asset deleted');

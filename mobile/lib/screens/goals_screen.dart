@@ -38,11 +38,9 @@ class _GoalsScreenState extends State<GoalsScreen> {
   final _viewKey = GlobalKey<AsyncViewState<_GoalsData>>();
 
   Future<_GoalsData> _load() async {
-    final results = await Future.wait([context.api.get('/goals/'), context.api.get('/goals/summary/progress')]);
-    return _GoalsData(
-      (results[0] as List).map((e) => Map<String, dynamic>.from(e)).toList(),
-      Map<String, dynamic>.from(results[1]),
-    );
+    final goals = context.services.goals;
+    final r = await Future.wait<Object>([goals.list(), goals.progressSummary()]);
+    return _GoalsData(r[0] as List<Map<String, dynamic>>, r[1] as Map<String, dynamic>);
   }
 
   void _reload() => _viewKey.currentState?.reload();
@@ -75,7 +73,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
     );
     if (amount == null || !mounted) return;
     try {
-      await context.api.post('/goals/${goal['id']}/contributions', body: {'amount': amount});
+      await context.services.goals.addContribution(goal['id'].toString(), amount);
       if (!mounted) return;
       context.showSnack('Contribution added');
       _reload();
@@ -88,7 +86,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
     final ok = await confirmDialog(context, title: 'Mark as completed?', message: '"${goal['goal_name']}" will move to your completed goals.', confirmLabel: 'Complete', destructive: false);
     if (!ok || !mounted) return;
     try {
-      await context.api.put('/goals/${goal['id']}', body: {'status': 'COMPLETED'});
+      await context.services.goals.update(goal['id'].toString(), {'status': 'COMPLETED'});
       if (!mounted) return;
       context.showSnack('Goal completed 🎉');
       _reload();
@@ -130,7 +128,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
             if (d.goals.isNotEmpty)
               DeleteAllButton(
                 label: 'Delete all goals (${d.goals.length})',
-                onPressed: () => deleteAllFlow<Map<String, dynamic>>(context, items: d.goals, what: 'goals', pathFor: (g) => '/goals/${g['id']}', onDone: _reload),
+                onPressed: () => deleteAllFlow<Map<String, dynamic>>(context, items: d.goals, what: 'goals', deleteItem: (g) => context.services.goals.delete(g['id'].toString()), onDone: _reload),
               ),
           ]);
         },
@@ -257,9 +255,9 @@ class _GoalFormState extends State<GoalForm> {
             'description': _description.text.trim().isEmpty ? null : _description.text.trim(),
           };
           if (_isEdit) {
-            await context.api.put('/goals/${widget.existing!['id']}', body: payload);
+            await context.services.goals.update(widget.existing!['id'].toString(), payload);
           } else {
-            await context.api.post('/goals/', body: payload);
+            await context.services.goals.create(payload);
           }
         },
       );
@@ -269,7 +267,7 @@ class _GoalFormState extends State<GoalForm> {
     if (!ok || !mounted) return;
     setState(() => _busy = true);
     try {
-      await context.api.delete('/goals/${widget.existing!['id']}');
+      await context.services.goals.delete(widget.existing!['id'].toString());
       if (!mounted) return;
       Navigator.pop(context, true);
       context.showSnack('Goal deleted');

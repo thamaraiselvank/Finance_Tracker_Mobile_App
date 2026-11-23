@@ -153,11 +153,8 @@ class _AssessmentScreenState extends State<AssessmentScreen> {
       },
     };
     try {
-      final res = await context.api.post(
-        '/ai/financial-assessment',
-        body: {'answers': answers},
-      );
-      if (mounted) setState(() => _result = Map<String, dynamic>.from(res));
+      final res = await context.services.ai.financialAssessment(answers);
+      if (mounted) setState(() => _result = res);
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } finally {

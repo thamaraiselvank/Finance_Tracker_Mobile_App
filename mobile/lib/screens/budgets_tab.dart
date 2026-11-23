@@ -23,8 +23,7 @@ class _BudgetsTabState extends State<BudgetsTab> with AutomaticKeepAliveClientMi
   @override
   bool get wantKeepAlive => true;
 
-  Future<List<Map<String, dynamic>>> _fetch(DateTime month) async =>
-      (await context.api.get('/budgets', query: {'month': month.month, 'year': month.year}) as List).map((e) => Map<String, dynamic>.from(e)).toList();
+  Future<List<Map<String, dynamic>>> _fetch(DateTime month) => context.services.budgets.forMonth(month.month, month.year);
 
   void _shift(int delta) {
     setState(() => _month = DateTime(_month.year, _month.month + delta));
@@ -70,12 +69,8 @@ class _BudgetsTabState extends State<BudgetsTab> with AutomaticKeepAliveClientMi
     }
   }
 
-  Future<void> _save(String categoryId, double limit, DateTime month) => context.api.put('/budgets', body: {
-        'category_id': categoryId,
-        'monthly_limit': limit,
-        'month': month.month,
-        'year': month.year,
-      });
+  Future<void> _save(String categoryId, double limit, DateTime month) =>
+      context.services.budgets.setLimit(categoryId: categoryId, monthlyLimit: limit, month: month.month, year: month.year);
 
   /// Copy every limit from the previous month into this month.
   Future<void> _copyFromLastMonth() async {

@@ -36,8 +36,9 @@ class _InsuranceScreenState extends State<InsuranceScreen> {
   final _viewKey = GlobalKey<AsyncViewState<_InsuranceData>>();
 
   Future<_InsuranceData> _load() async {
-    final results = await Future.wait([context.api.get('/insurance/'), context.api.get('/insurance/summary/overview')]);
-    return _InsuranceData((results[0] as List).map((e) => Map<String, dynamic>.from(e)).toList(), Map<String, dynamic>.from(results[1]));
+    final insurance = context.services.insurance;
+    final r = await Future.wait<Object>([insurance.list(), insurance.summary()]);
+    return _InsuranceData(r[0] as List<Map<String, dynamic>>, r[1] as Map<String, dynamic>);
   }
 
   Future<void> _openForm([Map<String, dynamic>? policy]) async {
@@ -119,7 +120,7 @@ class _InsuranceScreenState extends State<InsuranceScreen> {
                   context,
                   items: d.policies,
                   what: 'insurance policies',
-                  pathFor: (p) => '/insurance/${p['id']}',
+                  deleteItem: (p) => context.services.insurance.delete(p['id'].toString()),
                   onDone: () => _viewKey.currentState?.reload(),
                 ),
               ),
@@ -203,9 +204,9 @@ class _PolicyFormState extends State<PolicyForm> {
             'next_payment_date': _nextPayment == null ? null : apiDate(_nextPayment!),
           };
           if (_isEdit) {
-            await context.api.put('/insurance/${widget.existing!['id']}', body: payload);
+            await context.services.insurance.update(widget.existing!['id'].toString(), payload);
           } else {
-            await context.api.post('/insurance/', body: payload);
+            await context.services.insurance.create(payload);
           }
         },
       );
@@ -215,7 +216,7 @@ class _PolicyFormState extends State<PolicyForm> {
     if (!ok || !mounted) return;
     setState(() => _busy = true);
     try {
-      await context.api.delete('/insurance/${widget.existing!['id']}');
+      await context.services.insurance.delete(widget.existing!['id'].toString());
       if (!mounted) return;
       Navigator.pop(context, true);
       context.showSnack('Policy deleted');

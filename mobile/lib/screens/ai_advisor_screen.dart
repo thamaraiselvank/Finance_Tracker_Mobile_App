@@ -46,8 +46,7 @@ class _AiAdvisorScreenState extends State<AiAdvisorScreen> {
   Future<void> _init() async {
     _loadQuota();
     try {
-      final data = await context.api.get('/ai/conversations/current');
-      _applyConversation(Map<String, dynamic>.from(data));
+      _applyConversation(await context.services.ai.currentConversation());
     } catch (_) {
       _messages
         ..clear()
@@ -59,8 +58,8 @@ class _AiAdvisorScreenState extends State<AiAdvisorScreen> {
 
   Future<void> _loadQuota() async {
     try {
-      final q = await context.api.get('/ai/quota');
-      if (mounted) setState(() => _quota = Map<String, dynamic>.from(q));
+      final q = await context.services.ai.quota();
+      if (mounted) setState(() => _quota = q);
     } catch (_) {}
   }
 
@@ -94,10 +93,7 @@ class _AiAdvisorScreenState extends State<AiAdvisorScreen> {
     });
     _scrollToEnd();
     try {
-      final res = Map<String, dynamic>.from(await context.api.post('/ai/chat', body: {
-        'question': question,
-        if (_conversationId != null) 'conversation_id': _conversationId,
-      }));
+      final res = await context.services.ai.chat(question, conversationId: _conversationId);
       _conversationId = res['conversation_id']?.toString() ?? _conversationId;
       if (res['quota'] is Map) _quota = Map<String, dynamic>.from(res['quota']);
       _messages.add(_Msg(false, res['answer']?.toString() ?? '', (res['suggested_actions'] as List? ?? []).map((e) => e.toString()).toList()));
@@ -123,7 +119,7 @@ class _AiAdvisorScreenState extends State<AiAdvisorScreen> {
     if (_sending) return;
     setState(() => _loading = true);
     try {
-      final data = await context.api.post('/ai/conversations');
+      final data = await context.services.ai.newConversation();
       _conversationId = data['id']?.toString();
       _messages
         ..clear()
@@ -138,7 +134,7 @@ class _AiAdvisorScreenState extends State<AiAdvisorScreen> {
   Future<void> _openHistory() async {
     List<Map<String, dynamic>> items;
     try {
-      items = (await context.api.get('/ai/conversations') as List).map((e) => Map<String, dynamic>.from(e)).toList();
+      items = await context.services.ai.conversations();
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
       return;
@@ -163,7 +159,7 @@ class _AiAdvisorScreenState extends State<AiAdvisorScreen> {
     if (id == null || !mounted) return;
     setState(() => _loading = true);
     try {
-      _applyConversation(Map<String, dynamic>.from(await context.api.get('/ai/conversations/$id')));
+      _applyConversation(await context.services.ai.conversation(id));
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
     } finally {

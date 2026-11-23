@@ -13,13 +13,12 @@ const _expenseSources = {'BILL': 'Bill', 'SUBSCRIPTION': 'Subscription', 'EMI': 
 
 /// Loads occurrences from the start of this month up to 60 days ahead,
 /// so overdue items from this month are also visible.
-Future<List<Map<String, dynamic>>> loadUpcomingOccurrences(BuildContext context, {int daysAhead = 60}) async {
+Future<List<Map<String, dynamic>>> loadUpcomingOccurrences(BuildContext context, {int daysAhead = 60}) {
   final now = DateTime.now();
-  final data = await context.api.get('/schedules/occurrences', query: {
-    'start_date': apiDate(DateTime(now.year, now.month, 1)),
-    'end_date': apiDate(now.add(Duration(days: daysAhead))),
-  });
-  return (data as List).map((e) => Map<String, dynamic>.from(e)).toList();
+  return context.services.schedules.occurrences(
+    start: DateTime(now.year, now.month, 1),
+    end: now.add(Duration(days: daysAhead)),
+  );
 }
 
 class SchedulesScreen extends StatelessWidget {
@@ -97,10 +96,12 @@ class _UpcomingTabState extends State<_UpcomingTab> with AutomaticKeepAliveClien
     );
     if (ok != true || !mounted) return;
     try {
-      await context.api.post('/schedules/${o['schedule_id']}/occurrences/${apiDate(toDate(o['occurrence_date'])!)}/complete', body: {
-        'actual_amount': double.parse(amount.text),
-        'actual_date': apiDate(date),
-      });
+      await context.services.schedules.completeOccurrence(
+        o['schedule_id'].toString(),
+        toDate(o['occurrence_date'])!,
+        actualAmount: double.parse(amount.text),
+        actualDate: date,
+      );
       if (!mounted) return;
       context.showSnack(isIncome ? 'Marked as received' : 'Marked as paid');
       _viewKey.currentState?.reload();
@@ -206,7 +207,7 @@ class _AllSchedulesTabState extends State<_AllSchedulesTab> with AutomaticKeepAl
       floatingActionButton: FloatingActionButton.extended(onPressed: () => _openForm(), icon: const Icon(Icons.add), label: const Text('Recurring')),
       body: AsyncView<List<Map<String, dynamic>>>(
         key: _viewKey,
-        load: () async => (await context.api.get('/schedules') as List).map((e) => Map<String, dynamic>.from(e)).toList(),
+        load: () => context.services.schedules.list(),
         builder: (context, items, reload) {
           if (items.isEmpty) {
             return ListView(children: [
@@ -241,7 +242,7 @@ class _AllSchedulesTabState extends State<_AllSchedulesTab> with AutomaticKeepAl
                 context,
                 items: items,
                 what: 'recurring items',
-                pathFor: (s) => '/schedules/${s['id']}',
+                deleteItem: (s) => context.services.schedules.delete(s['id'].toString()),
                 extraWarning: 'Transactions already recorded from them are kept.',
                 onDone: () => _viewKey.currentState?.reload(),
               ),
@@ -315,9 +316,10 @@ class _ScheduleFormState extends State<ScheduleForm> {
 
   Future<void> _loadOptions() async {
     try {
-      final r = await Future.wait([context.api.get('/accounts'), context.api.get('/categories')]);
-      _accounts = (r[0] as List).map((e) => Map<String, dynamic>.from(e)).toList();
-      _categories = (r[1] as List).map((e) => Map<String, dynamic>.from(e)).toList();
+      final s = context.services;
+      final r = await Future.wait([s.accounts.list(), s.categories.list()]);
+      _accounts = r[0];
+      _categories = r[1];
       if (_accountId == null && _accounts.length == 1) _accountId = _accounts.first['id'].toString();
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
@@ -350,9 +352,9 @@ class _ScheduleFormState extends State<ScheduleForm> {
           }
           if (_isEdit) {
             payload['is_active'] = _active;
-            await context.api.put('/schedules/${widget.existing!['id']}', body: payload);
+            await context.services.schedules.update(widget.existing!['id'].toString(), payload);
           } else {
-            await context.api.post('/schedules', body: payload);
+            await context.services.schedules.create(payload);
           }
         },
       );
@@ -362,7 +364,7 @@ class _ScheduleFormState extends State<ScheduleForm> {
     if (!ok || !mounted) return;
     setState(() => _busy = true);
     try {
-      await context.api.delete('/schedules/${widget.existing!['id']}');
+      await context.services.schedules.delete(widget.existing!['id'].toString());
       if (!mounted) return;
       Navigator.pop(context, true);
       context.showSnack('Deleted');

@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
+import '../services/services.dart';
 import '../widgets/common.dart';
 
 /// One numeric input of a calculator.
@@ -24,12 +25,12 @@ class _Field {
   });
 }
 
-/// A calculator definition: inputs, endpoint, and how to render results.
+/// A calculator definition: inputs, which calculation, and how to render results.
 class _CalcDef {
   final String title;
   final String subtitle;
   final IconData icon;
-  final String endpoint;
+  final CalculatorKind kind;
   final List<_Field> fields;
   final List<(String, String, bool)> Function(Map<String, dynamic> r)
   results; // label, key/value, isMoney
@@ -37,7 +38,7 @@ class _CalcDef {
     this.title,
     this.subtitle,
     this.icon,
-    this.endpoint,
+    this.kind,
     this.fields,
     this.results,
   );
@@ -48,7 +49,7 @@ List<_CalcDef> _calculators(Map<String, dynamic>? user) => [
     'SIP',
     'Monthly investment growth',
     Icons.trending_up,
-    '/calculators/sip',
+    CalculatorKind.sip,
     const [
       _Field('monthly_investment', 'Monthly investment', '10000', money: true),
       _Field(
@@ -76,7 +77,7 @@ List<_CalcDef> _calculators(Map<String, dynamic>? user) => [
     'Lumpsum',
     'One-time investment growth',
     Icons.savings_outlined,
-    '/calculators/lumpsum',
+    CalculatorKind.lumpsum,
     const [
       _Field('total_investment', 'Investment amount', '100000', money: true),
       _Field(
@@ -103,7 +104,7 @@ List<_CalcDef> _calculators(Map<String, dynamic>? user) => [
     'EMI',
     'Loan instalment & interest',
     Icons.request_quote_outlined,
-    '/calculators/emi',
+    CalculatorKind.emi,
     const [
       _Field('loan_amount', 'Loan amount', '2500000', money: true),
       _Field('interest_rate_pct', 'Interest rate', '8.5', suffix: '% p.a.'),
@@ -119,7 +120,7 @@ List<_CalcDef> _calculators(Map<String, dynamic>? user) => [
     'CAGR',
     'Annualised growth rate',
     Icons.show_chart,
-    '/calculators/cagr',
+    CalculatorKind.cagr,
     const [
       _Field('initial_value', 'Initial value', '100000', money: true),
       _Field('final_value', 'Final value', '200000', money: true),
@@ -139,7 +140,7 @@ List<_CalcDef> _calculators(Map<String, dynamic>? user) => [
     'FIRE',
     'Financial independence / retirement',
     Icons.local_fire_department_outlined,
-    '/calculators/fire',
+    CalculatorKind.fire,
     [
       _Field(
         'current_age',
@@ -279,8 +280,8 @@ class _CalculatorPageState extends State<_CalculatorPage> {
               ? int.parse(_controllers[f.key]!.text.trim())
               : double.parse(_controllers[f.key]!.text.trim()),
       };
-      final res = await context.api.post(widget.def.endpoint, body: body);
-      if (mounted) setState(() => _result = Map<String, dynamic>.from(res));
+      final res = await context.services.calculators.calculate(widget.def.kind, body);
+      if (mounted) setState(() => _result = res);
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
     } finally {

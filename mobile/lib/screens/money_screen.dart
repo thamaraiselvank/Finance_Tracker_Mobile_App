@@ -105,12 +105,12 @@ class _TransactionFormState extends State<TransactionForm> {
       _optionsError = null;
     });
     try {
-      final api = context.api;
-      final results = await Future.wait([api.get('/accounts'), api.get('/categories')]);
+      final s = context.services;
+      final results = await Future.wait([s.accounts.list(), s.categories.list()]);
       if (!mounted) return;
       setState(() {
-        _accounts = (results[0] as List).map((e) => Map<String, dynamic>.from(e)).toList();
-        _categories = (results[1] as List).map((e) => Map<String, dynamic>.from(e)).toList();
+        _accounts = results[0];
+        _categories = results[1];
         if (_accountId == null && _accounts.length == 1) _accountId = _accounts.first['id'].toString();
         _loadingOptions = false;
       });
@@ -144,9 +144,9 @@ class _TransactionFormState extends State<TransactionForm> {
             'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
           };
           if (_isEdit) {
-            await context.api.put('/transactions/${widget.existing!['id']}', body: payload);
+            await context.services.transactions.update(widget.existing!['id'].toString(), payload);
           } else {
-            await context.api.post('/transactions', body: payload);
+            await context.services.transactions.create(payload);
           }
         },
       );
@@ -156,7 +156,7 @@ class _TransactionFormState extends State<TransactionForm> {
     if (!ok || !mounted) return;
     setState(() => _busy = true);
     try {
-      await context.api.delete('/transactions/${widget.existing!['id']}');
+      await context.services.transactions.delete(widget.existing!['id'].toString());
       if (!mounted) return;
       Navigator.pop(context, true);
       context.showSnack('Transaction deleted');
@@ -262,8 +262,7 @@ class _AccountsTabState extends State<AccountsTab> with AutomaticKeepAliveClient
   @override
   bool get wantKeepAlive => true;
 
-  Future<List<Map<String, dynamic>>> _load() async =>
-      (await context.api.get('/accounts') as List).map((e) => Map<String, dynamic>.from(e)).toList();
+  Future<List<Map<String, dynamic>>> _load() => context.services.accounts.list();
 
   Future<void> _openForm([Map<String, dynamic>? account]) async {
     final saved = await showFormSheet<bool>(context,
@@ -370,9 +369,9 @@ class _AccountFormState extends State<AccountForm> {
             'is_active': _active,
           };
           if (_isEdit) {
-            await context.api.put('/accounts/${widget.existing!['id']}', body: payload);
+            await context.services.accounts.update(widget.existing!['id'].toString(), payload);
           } else {
-            await context.api.post('/accounts', body: payload);
+            await context.services.accounts.create(payload);
           }
         },
       );
@@ -384,7 +383,7 @@ class _AccountFormState extends State<AccountForm> {
     if (!ok || !mounted) return;
     setState(() => _busy = true);
     try {
-      await context.api.delete('/accounts/${widget.existing!['id']}');
+      await context.services.accounts.delete(widget.existing!['id'].toString());
       if (!mounted) return;
       Navigator.pop(context, true);
       context.showSnack('Account deleted');
