@@ -25,7 +25,7 @@ Future<void> main() async {
   AppLock? lock;
   if (AppConfig.isLocal) {
     try {
-      services = localServices(await LocalDb.openEncrypted());
+      services = localServices(await LocalDb.openEncrypted(), taxRules: await loadTaxRules());
     } catch (e) {
       runApp(_StartupError(e.toString()));
       return;

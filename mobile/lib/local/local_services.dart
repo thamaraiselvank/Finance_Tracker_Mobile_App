@@ -7,15 +7,26 @@ library;
 
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
+
 import '../services/errors.dart';
 import '../services/services.dart';
 import 'local_capture.dart';
 import 'local_db.dart';
 import 'local_money.dart';
+import 'local_planning.dart';
 import 'py_round.dart';
+import 'tax_estimator.dart';
 import 'validate.dart';
 
-Services localServices(LocalDb db) => Services(
+/// Loads the bundled income-tax rules (assets/tax/*.json).
+Future<TaxRules> loadTaxRules() async {
+  final manifest = await AssetManifest.loadFromAssetBundle(rootBundle);
+  final files = manifest.listAssets().where((p) => p.startsWith('assets/tax/') && p.endsWith('.json'));
+  return TaxRules([for (final f in files) jsonDecode(await rootBundle.loadString(f)) as Map<String, dynamic>]);
+}
+
+Services localServices(LocalDb db, {TaxRules? taxRules}) => Services(
       auth: LocalProfileService(db),
       accounts: LocalAccountsService(db),
       categories: LocalCategoriesService(db),
@@ -26,8 +37,8 @@ Services localServices(LocalDb db) => Services(
       debts: const _PendingDebts(),
       insurance: const _PendingInsurance(),
       schedules: const _PendingSchedules(),
-      tax: const _PendingTax(),
-      calculators: const _PendingCalculators(),
+      tax: taxRules == null ? const _PendingTax() : LocalTaxService(db, taxRules),
+      calculators: const LocalCalculatorsService(),
       essentials: const _PendingEssentials(),
       imports: const _PendingImport(),
       ai: const _PendingAi(),
@@ -256,12 +267,6 @@ class _PendingTax implements TaxService {
   Future<Json> profile(String taxYear) => throw _na;
   @override
   Future<Json> estimate(Json input) => throw _na;
-}
-
-class _PendingCalculators implements CalculatorsService {
-  const _PendingCalculators();
-  @override
-  Future<Json> calculate(CalculatorKind kind, Json input) => throw const NotAvailableYetException('Calculators');
 }
 
 class _PendingEssentials implements EssentialsService {
