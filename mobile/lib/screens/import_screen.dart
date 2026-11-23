@@ -36,6 +36,7 @@ class _ImportScreenState extends State<ImportScreen> {
   String _mode = 'transactions'; // or 'stocks'
   String _broker = 'GROWW';
   List<Map<String, dynamic>> _accounts = [];
+  List<Map<String, dynamic>> _categories = [];
   String? _accountId;
   PlatformFile? _file;
   bool _loadingAccounts = true;
@@ -58,8 +59,10 @@ class _ImportScreenState extends State<ImportScreen> {
 
   Future<void> _loadAccounts() async {
     try {
-      _accounts = await context.services.accounts.list();
+      final services = context.services;
+      _accounts = await services.accounts.list();
       if (_accounts.length == 1) _accountId = _accounts.first['id'].toString();
+      _categories = await services.categories.list();
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
     }
@@ -68,6 +71,9 @@ class _ImportScreenState extends State<ImportScreen> {
 
   bool get _isPdf => (_file?.name.toLowerCase() ?? '').endsWith('.pdf');
   bool get _isStocks => _mode == 'stocks';
+
+  /// The phone-only version reads files on the phone and supports own-money rows.
+  bool get _onPhone => context.services.capture != null;
 
   void _setMode(String mode) => setState(() {
         _mode = mode;
@@ -104,10 +110,15 @@ class _ImportScreenState extends State<ImportScreen> {
         importType: _mode,
         broker: _isStocks ? _broker : null,
         password: !_isStocks && _isPdf && _password.text.isNotEmpty ? _password.text : null,
+        accountId: _isStocks ? null : _accountId,
       );
       setState(() {
         _parsed = res;
-        _rows = (res['preview'] as List? ?? []).map((e) => {...Map<String, dynamic>.from(e), 'included': true}).toList();
+        _rows = (res['preview'] as List? ?? []).map((e) {
+          final row = Map<String, dynamic>.from(e);
+          // Rows already in Money, or ones the user asked to ignore, start unticked.
+          return {...row, 'included': row['duplicate'] != true && row['skip_reason'] == null};
+        }).toList();
       });
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
@@ -116,8 +127,14 @@ class _ImportScreenState extends State<ImportScreen> {
     }
   }
 
+  static bool _isIn(Map<String, dynamic> r) {
+    final type = (r['type'] as String? ?? '').toUpperCase();
+    return type == 'INCOME' || (type == 'TRANSFER' && r['direction'] == 'IN');
+  }
+
   bool _invalid(Map<String, dynamic> r) =>
-      !const ['INCOME', 'EXPENSE'].contains((r['type'] as String? ?? '').toUpperCase()) ||
+      !(const ['INCOME', 'EXPENSE'].contains((r['type'] as String? ?? '').toUpperCase()) ||
+          ((r['type'] as String? ?? '').toUpperCase() == 'TRANSFER' && const ['IN', 'OUT'].contains(r['direction']))) ||
       !RegExp(r'^\d{4}-\d{2}-\d{2}$').hasMatch(r['date']?.toString() ?? '') ||
       (r['description']?.toString().trim() ?? '').isEmpty ||
       toDouble(r['amount']) <= 0 ||
@@ -166,6 +183,9 @@ class _ImportScreenState extends State<ImportScreen> {
             'description': r['description'],
             'amount': toDouble(r['amount']),
             'type': (r['type'] as String).toUpperCase(),
+            if (r['direction'] != null) 'direction': r['direction'],
+            if (r['category_id'] != null) 'category_id': r['category_id'],
+            if (r['subcategory_id'] != null) 'subcategory_id': r['subcategory_id'],
             if ((r['category'] ?? r['category_name']) != null) 'category': r['category'] ?? r['category_name'],
             if (r['subcategory'] != null) 'subcategory': r['subcategory'],
             if ((r['category_name'] ?? r['category']) != null) 'notes': r['category_name'] ?? r['category'],
@@ -182,7 +202,8 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Future<void> _editRow(int index) async {
-    final updated = await showFormSheet<Map<String, dynamic>>(context, title: 'Check this row', child: _RowEditor(row: _rows[index]));
+    final updated = await showFormSheet<Map<String, dynamic>>(context,
+        title: 'Check this row', child: _RowEditor(row: _rows[index], categories: _categories, ownMoney: _onPhone));
     if (updated != null) setState(() => _rows[index] = updated);
   }
 
@@ -245,7 +266,8 @@ class _ImportScreenState extends State<ImportScreen> {
                 controlAffinity: ListTileControlAffinity.leading,
                 title: Text(r['name']?.toString() ?? '—',
                     maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(decoration: on ? null : TextDecoration.lineThrough)),
-                subtitle: Text('${r['sub_type'] ?? 'Stock'} • Qty ${_qty(r['quantity'])} • Invested ${state.money.compact(r['invested_amount'], hidden: state.hideAmounts)}'),
+                subtitle: Text('${r['sub_type'] ?? 'Stock'} • Qty ${_qty(r['quantity'])} • Invested ${state.money.compact(r['invested_amount'], hidden: state.hideAmounts)}'
+                    '${r['updates_existing'] == true ? ' • Updates the one in Wealth' : ''}'),
                 secondary: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
                   Text(state.money.compact(r['current_value'], hidden: state.hideAmounts), style: const TextStyle(fontWeight: FontWeight.w700)),
                   Text('${p >= 0 ? '+' : '−'}${state.money.compact(p.abs(), hidden: state.hideAmounts)}',
@@ -288,7 +310,8 @@ class _ImportScreenState extends State<ImportScreen> {
               Text(
                 _isStocks
                     ? 'Upload the holdings file (CSV or Excel) from your broker. Your stocks and funds are added to Wealth. You can untick any holding before importing.'
-                    : 'Upload a CSV, Excel or PDF bank statement. Transactions are added to Money. You can review and correct every row before anything is saved.',
+                    : 'Upload a CSV, Excel or PDF bank statement. Transactions are added to Money. You can review and correct every row before anything is saved.'
+                        '${_onPhone ? ' The file is read on your phone and never uploaded. Payments already in Money (from SMS or earlier imports) are found and left unticked.' : ''}',
                 style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
               ),
               const SizedBox(height: 16),
@@ -323,7 +346,12 @@ class _ImportScreenState extends State<ImportScreen> {
                   label: 'Add transactions to account',
                   value: _accountId,
                   items: {for (final a in _accounts) a['id'].toString(): a['name'].toString()},
-                  onChanged: (v) => setState(() => _accountId = v),
+                  onChanged: (v) => setState(() {
+                    _accountId = v;
+                    // Rows already in the account are marked when reading, so read again.
+                    _parsed = null;
+                    _rows = [];
+                  }),
                 ),
                 _filePicker(),
                 if (_isPdf) ...[
@@ -340,7 +368,15 @@ class _ImportScreenState extends State<ImportScreen> {
               if (_parsed != null && _isStocks) ..._holdingsPreview(state, theme),
               if (_parsed != null && !_isStocks) ...[
                 const SectionHeader('Preview'),
-                Text('Found ${_rows.length} transactions in ${_parsed!['filename'] ?? _file!.name}.'),
+                Text('Found ${_rows.length} transactions in ${_parsed!['filename'] ?? _file!.name}'
+                    '${_parsed!['detected_bank'] != null ? ' (${_parsed!['detected_bank']})' : ''}.'),
+                if (_rows.any((r) => r['duplicate'] == true))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                        '${_rows.where((r) => r['duplicate'] == true).length} are already in Money and were unticked. Tick any that are really new.',
+                        style: theme.textTheme.bodySmall),
+                  ),
                 if (_parsed!['review_notice'] != null)
                   Padding(padding: const EdgeInsets.only(top: 6), child: Text(_parsed!['review_notice'].toString(), style: const TextStyle(color: AppColors.warning))),
                 if (_unresolved.isNotEmpty)
@@ -356,18 +392,26 @@ class _ImportScreenState extends State<ImportScreen> {
                         final r = _rows[i];
                         final included = r['included'] != false;
                         final bad = included && _invalid(r);
-                        final isIncome = (r['type'] as String? ?? '').toUpperCase() == 'INCOME';
+                        final isIncome = _isIn(r);
+                        final ownMoney = (r['type'] as String? ?? '').toUpperCase() == 'TRANSFER';
                         return ListTile(
                           onTap: () => _editRow(i),
                           tileColor: bad ? AppColors.warning.withValues(alpha: 0.08) : null,
                           leading: Checkbox(value: included, onChanged: (v) => setState(() => r['included'] = v)),
                           title: Text(r['description']?.toString() ?? '—', maxLines: 2, overflow: TextOverflow.ellipsis,
                               style: TextStyle(decoration: included ? null : TextDecoration.lineThrough)),
-                          subtitle: Text([r['date'] ?? '?', r['category_name'] ?? r['category'], if (bad) 'Needs review'].where((e) => e != null).join(' • '),
+                          subtitle: Text(
+                              [
+                                r['date'] ?? '?',
+                                r['category_name'] ?? r['category'],
+                                if (ownMoney) 'own money',
+                                if (bad) 'Needs review',
+                                r['duplicate_note'] ?? r['skip_reason'],
+                              ].where((e) => e != null).join(' • '),
                               style: TextStyle(color: bad ? AppColors.warning : null)),
                           trailing: Text(
                             '${(r['type'] == null) ? '?' : (isIncome ? '+' : '−')}${state.money.format(r['amount'], hidden: state.hideAmounts)}',
-                            style: TextStyle(fontWeight: FontWeight.w700, color: isIncome ? AppColors.income : null),
+                            style: TextStyle(fontWeight: FontWeight.w700, color: isIncome && !ownMoney ? AppColors.income : null),
                           ),
                         );
                       }),
@@ -381,8 +425,12 @@ class _ImportScreenState extends State<ImportScreen> {
 }
 
 class _RowEditor extends StatefulWidget {
-  const _RowEditor({required this.row});
+  const _RowEditor({required this.row, required this.categories, required this.ownMoney});
   final Map<String, dynamic> row;
+  final List<Map<String, dynamic>> categories;
+
+  /// Offer "own money" (phone-only version).
+  final bool ownMoney;
 
   @override
   State<_RowEditor> createState() => _RowEditorState();
@@ -391,17 +439,28 @@ class _RowEditor extends StatefulWidget {
 class _RowEditorState extends State<_RowEditor> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _description, _amount;
-  String? _type;
+
+  /// EXPENSE, INCOME, TRANSFER_OUT or TRANSFER_IN.
+  String? _kind;
+  String? _categoryId;
   DateTime? _date;
 
   @override
   void initState() {
     super.initState();
-    _description = TextEditingController(text: widget.row['description']?.toString() ?? '');
-    _amount = TextEditingController(text: toDouble(widget.row['amount']) > 0 ? toDouble(widget.row['amount']).toString() : '');
-    final t = (widget.row['type'] as String?)?.toUpperCase();
-    _type = (t == 'INCOME' || t == 'EXPENSE') ? t : null;
-    _date = toDate(widget.row['date']);
+    final row = widget.row;
+    _description = TextEditingController(text: row['description']?.toString() ?? '');
+    _amount = TextEditingController(text: toDouble(row['amount']) > 0 ? toDouble(row['amount']).toString() : '');
+    final t = (row['type'] as String?)?.toUpperCase();
+    _kind = switch (t) {
+      'INCOME' || 'EXPENSE' => t,
+      'TRANSFER' when widget.ownMoney && row['direction'] == 'IN' => 'TRANSFER_IN',
+      'TRANSFER' when widget.ownMoney && row['direction'] == 'OUT' => 'TRANSFER_OUT',
+      _ => null,
+    };
+    _categoryId = row['category_id'] as String?;
+    if (_categoryId != null && !_categoriesFor(_kind).containsKey(_categoryId)) _categoryId = null;
+    _date = toDate(row['date']);
   }
 
   @override
@@ -411,13 +470,46 @@ class _RowEditorState extends State<_RowEditor> {
     super.dispose();
   }
 
+  String? _typeOf(String? kind) => kind == null ? null : (kind.startsWith('TRANSFER') ? 'TRANSFER' : kind);
+
+  Map<String, String> _categoriesFor(String? kind) {
+    final type = _typeOf(kind);
+    return {
+      for (final c in widget.categories)
+        if (c['type'] == type) c['id'].toString(): c['name'].toString(),
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     final money = context.read<AppState>().money;
+    final categories = _categoriesFor(_kind);
     return Form(
       key: _formKey,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        DropdownInput<String>(label: 'Type', value: _type, items: const {'EXPENSE': 'Expense (money out)', 'INCOME': 'Income (money in)'}, onChanged: (v) => setState(() => _type = v)),
+        DropdownInput<String>(
+          label: 'Type',
+          value: _kind,
+          items: {
+            'EXPENSE': 'Spending (money out)',
+            'INCOME': 'Income (money in)',
+            if (widget.ownMoney) ...{
+              'TRANSFER_OUT': 'Own money out (not spending)',
+              'TRANSFER_IN': 'Own money in (not income)',
+            },
+          },
+          onChanged: (v) => setState(() {
+            if (_typeOf(v) != _typeOf(_kind)) _categoryId = null;
+            _kind = v;
+          }),
+        ),
+        if (widget.ownMoney && categories.isNotEmpty)
+          DropdownInput<String>(
+            label: 'Category',
+            value: _categoryId,
+            items: categories,
+            onChanged: (v) => setState(() => _categoryId = v),
+          ),
         TextInput(controller: _description, label: 'Description', required: true),
         AmountField(controller: _amount, label: 'Amount', prefix: money.symbol),
         DateInput(label: 'Date', value: _date, onChanged: (d) => setState(() => _date = d)),
@@ -426,9 +518,22 @@ class _RowEditorState extends State<_RowEditor> {
           label: 'Looks right – mark reviewed',
           onPressed: () {
             if (!_formKey.currentState!.validate()) return;
+            final categoryChanged = _categoryId != widget.row['category_id'];
             Navigator.pop(context, {
               ...widget.row,
-              'type': _type,
+              'type': _typeOf(_kind),
+              'direction': switch (_kind) {
+                'INCOME' || 'TRANSFER_IN' => 'IN',
+                'EXPENSE' || 'TRANSFER_OUT' => 'OUT',
+                _ => null,
+              },
+              if (widget.ownMoney) ...{
+                'category_id': _categoryId,
+                'category_name': _categoryId == null ? null : categories[_categoryId],
+                if (categoryChanged) 'subcategory_id': null,
+                // The file's own category name no longer applies once one is picked.
+                if (_categoryId != null || categoryChanged) 'category': null,
+              },
               'description': _description.text.trim(),
               'amount': double.parse(_amount.text),
               'date': apiDate(_date!),

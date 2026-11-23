@@ -98,8 +98,29 @@ In this mode:
   the name after "Paid to" / "Received from", the UPI reference, the bank and
   account digits, the note and the receipt's own date and time. The payment
   then waits in the review inbox like the others.
-- **Not moved yet** (these show "not in the offline version yet"): statement
-  import and the AI chat. Local data is never mixed with server data.
+- **Import (More → Import), read on the phone, nothing uploaded:**
+  - Bank statements as CSV, Excel (.xlsx, and bank ".xls" downloads that are
+    really web pages) or PDF. Typed PDFs are read with PDFium (pdfrx);
+    scanned pages are read with ML Kit's offline text recognition. A PDF
+    password is used only to open the file and is never stored. Old binary
+    .xls files must be saved as .xlsx or CSV first.
+  - Every row gets the type and category an SMS for the same payment would
+    get: your rules, then the built-in own-money rules (Zerodha settlements,
+    ATM cash, card bills…), then a keyword guess. The payee is read from
+    narrations like `UPI/DR/…/SWIGGY/…` or `NEFT CR-…-ZERODHA BROKING LTD-…`.
+  - Payments already in the chosen account (from SMS, a notification, a
+    screenshot or an earlier import, within 2 days and same amount) are
+    marked "Already in Money" and left unticked; so are payments a rule says
+    to ignore. Rows can be corrected, including "Own money in / out" and the
+    category, before importing.
+  - Broker holdings (Groww, Zerodha Console, Upstox, Angel One, any CSV /
+    Excel): a holding already in Wealth (same ISIN or name) is updated
+    instead of added twice.
+  - Parsing is ported from `backend/app/services/importer.py` and checked
+    against it (`test/parity/import_parity_test.dart`), with a few
+    deliberate fixes listed at the top of `lib/import/statement_parser.dart`.
+- **Not moved yet** (shows "not in the offline version yet"): the AI chat.
+  Local data is never mixed with server data.
 - Every ported calculation is checked against the Python backend with
   fixtures from `tools/parity/generate_fixtures.py` (calculators, tax, debt
   payoff plans, Bills & recurring calendar, Wealth summary, Financial health,
@@ -160,6 +181,8 @@ flutter run
 | `core/app_lock.dart` | Fingerprint / PIN app lock for the phone-only version |
 | `capture/` | SMS and notification parser, screenshot (OCR) receipt parser, category suggestions, SMS / notification sync, Share to Finverse |
 | `local/local_capture.dart` | Review inbox: pending payments, duplicates, confirm / ignore / undo, learning |
+| `import/` | Statement / holdings import on the phone: CSV / .xlsx / HTML-table reader, statement and holdings parsers, PDF reader (PDFium + ML Kit OCR), table layout from word positions, payee names from narrations |
+| `local/local_import.dart` | Import service: suggested categories, "already in Money" detection, saving rows and holdings |
 | `android/.../SmsReader.kt` | Native SMS inbox reader (channel `finverse/sms`) |
 | `android/.../PaymentNotificationListener.kt` | Queues payment-app notifications (channel `finverse/capture`) |
 | `android/.../MainActivity.kt` | Receives shared screenshots / text for "Share to Finverse" |

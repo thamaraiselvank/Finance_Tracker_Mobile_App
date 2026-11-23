@@ -319,8 +319,9 @@ void main() {
 
   test('areas not moved yet say so clearly instead of using the server', () async {
     final services = localServices(db);
-    expect((await errorOf(() => services.imports.commitAssets([]))).toString(), contains('not in the offline version yet'));
-    expect(await errorOf(() => services.ai.chat('hi')), isA<NotAvailableYetException>());
+    final error = await errorOf(() => services.ai.chat('hi'));
+    expect(error, isA<NotAvailableYetException>());
+    expect(error.toString(), contains('not in the offline version yet'));
     expect(services, isA<Services>());
   });
 }

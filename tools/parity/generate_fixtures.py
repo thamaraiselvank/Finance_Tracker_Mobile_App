@@ -507,6 +507,142 @@ def py_round_fixture() -> dict[str, Any]:
     return {"_comment": HEADER, "service": "pyRound", "cases": cases}
 
 
+def _xlsx(sheets: dict[str, list[list[Any]]]) -> bytes:
+    """A workbook with the given rows per sheet (openpyxl, as banks' exports)."""
+    import io
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    wb.remove(wb.active)
+    for name, rows in sheets.items():
+        ws = wb.create_sheet(name)
+        for row in rows:
+            ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def import_fixture() -> dict[str, Any]:
+    """parse_statement_file / parse_stock_file / parse_zerodha_holdings_file on sample files."""
+    import base64
+    import datetime as dt
+
+    from app.services.importer import parse_statement_file, parse_stock_file, parse_zerodha_holdings_file
+
+    statement_keys = ("date", "time", "description", "amount", "type", "category", "subcategory", "needs_review")
+    holding_keys = ("name", "asset_class", "sub_type", "quantity", "buy_price", "invested_amount", "current_price", "current_value", "purchase_date", "notes")
+
+    def pick(result: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+        if not result.get("success"):
+            return {"success": False}
+        return {"success": True, "preview": [{k: r.get(k) for k in keys} for r in result["preview"]]}
+
+    csv_cases = {
+        "withdrawal_deposit_balance": (
+            "Date,Narration,Chq./Ref.No.,Value Dt,Withdrawal Amt.,Deposit Amt.,Closing Balance\n"
+            "01/11/26,UPI-SWIGGY-swiggy@ybl-YESB0000001-412345678901-Payment,0000412345678901,01/11/26,450.00,,10550.00\n"
+            "03/11/26,NEFT CR-YESB0000001-ZERODHA BROKING LTD-ZERODHA-YESBN1234,YESBN1234,03/11/26,,\"12,345.00\",22895.00\n"
+            "05/11/26,ATW-512345XXXXXX1234-S1ANMU12-MUMBAI,000000001234,05/11/26,2000.00,,20895.00\n"
+            "07/11/26,SALARY NOV ACME PVT LTD,,07/11/26,,85000.00,105895.00\n"
+            "08/11/26,AMAZON PAY INDIA,,08/11/26,999.00,,104000.00\n"
+        ),
+        "amount_with_cr_dr": (
+            "Txn Date,Description,Amount,Balance\n"
+            "15-Nov-2026,Interest credit,120.50 Cr,1120.50\n"
+            "16-Nov-2026,Electricity bill BESCOM,1500 Dr,-379.50\n"
+            "17-Nov-2026,Mystery,300,-79.50\n"
+        ),
+        "app_export_with_type_and_category": (
+            "Date,Note,Amount,Income/Expense,Category,Subcategory\n"
+            "15-11-2026 10:30:00,Lunch,-250,Expense,Food & Groceries,Restaurants\n"
+            "16-11-2026 09:00:00,Salary,90000,Income,Salary,\n"
+            "17-11-2026,Gift from friend,500,Income,Gifts,\n"
+            "18-11-2026,Refund,200,Expense,Shopping & Lifestyle,\n"
+        ),
+        "negative_amounts_no_type": (
+            "Date,Particulars,Amount\n"
+            "2026-11-01,Rent November,-15000\n"
+            "2026-11-02,Cashback,25\n"
+            "N/A,Unknown row,-10\n"
+        ),
+        "debit_and_credit_both": (
+            "Date,Remarks,Debit,Credit\n"
+            "10/11/2026,Odd row,100,200\n"
+            "11/11/2026,Normal,50,\n"
+            "12/11/2026,,75,\n"
+        ),
+        "balance_mismatch": (
+            "Date,Narration,Debit,Credit,Balance\n"
+            "01/11/2026,Opening,,,1000\n"
+            "02/11/2026,Coffee,100,,900\n"
+            "03/11/2026,Wrong balance,100,,700\n"
+            "04/11/2026,Says debit but balance went up,50,,750\n"
+        ),
+        "no_header": "foo,bar\n1,2\n",
+    }
+    statement_cases = [
+        {"name": name, "filename": f"{name}.csv", "content_b64": base64.b64encode(text.encode()).decode(),
+         "expected": pick(parse_statement_file(text.encode(), f"{name}.csv"), statement_keys)}
+        for name, text in csv_cases.items()
+    ]
+    excel = _xlsx({"Statement": [
+        ["HDFC BANK Ltd."],
+        ["Account Statement for 01/11/2026 to 30/11/2026"],
+        [],
+        ["Date", "Narration", "Chq./Ref.No.", "Value Dt", "Withdrawal Amt.", "Deposit Amt.", "Closing Balance"],
+        [dt.datetime(2026, 11, 1), "UPI-ZOMATO-zomato@hdfcbank", "412300000001", dt.datetime(2026, 11, 1), 320.5, None, 9679.5],
+        [dt.datetime(2026, 11, 2), "IMPS-412300000002-RAHUL K-SBIN", "412300000002", dt.datetime(2026, 11, 2), None, 1500, 11179.5],
+        [dt.datetime(2026, 11, 4), "CC 1234 AUTOPAY", "000", dt.datetime(2026, 11, 4), 5000, None, 6179.5],
+    ]})
+    statement_cases.append({
+        "name": "excel_with_preamble", "filename": "statement.xlsx", "content_b64": base64.b64encode(excel).decode(),
+        "expected": pick(parse_statement_file(excel, "statement.xlsx"), statement_keys),
+    })
+
+    groww = (
+        "Stock Name,ISIN,Quantity,Average buy price,Buy value,Closing price,Closing value\n"
+        "Infosys Ltd,INE009A01021,10,1450.5,14505,1520.25,15202.5\n"
+        "HDFC Bank Ltd,INE040A01034,5,1600,8000,1700,8500\n"
+        "Zero row,INE000000000,0,0,0,0,0\n"
+    )
+    generic = "Symbol,Qty,Avg Price,LTP\nTCS,3,3200,3500.75\nITC,100,410.1,455\n"
+    stock_cases = [
+        {"name": n, "filename": f"{n}.csv", "broker": b, "content_b64": base64.b64encode(t.encode()).decode(),
+         "expected": pick(parse_stock_file(t.encode(), f"{n}.csv", b), holding_keys)}
+        for n, t, b in (("groww", groww, "GROWW"), ("generic", generic, "OTHER"))
+    ]
+    zerodha = _xlsx({
+        "Equity": [
+            ["Client ID", "AB1234"],
+            ["Statement of Equity holdings"],
+            [],
+            ["Symbol", "ISIN", "Sector", "Quantity Available", "Quantity Discrepant", "Average Price", "Previous Closing Price", "Unrealized P&L"],
+            ["INFY", "INE009A01021", "IT", 10, 0, 1450.5, 1520.25, 697.5],
+            ["RELIANCE", "INE002A01018", "Energy", 4, 0, 2400, 2550, 600],
+            ["Total", None, None, None, None, None, None, 1297.5],
+        ],
+        "Mutual Funds": [
+            ["Mutual Fund holdings"],
+            ["Symbol", "ISIN", "Instrument Type", "Quantity Available", "Average Price", "Previous Closing Price"],
+            ["PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN", "INF879O01027", "Equity", 120.456, 60.12, 78.9],
+        ],
+    })
+    zerodha_cases = [{
+        "name": "console_workbook", "filename": "holdings.xlsx", "content_b64": base64.b64encode(zerodha).decode(),
+        "expected": pick(parse_zerodha_holdings_file(zerodha, "holdings.xlsx"), holding_keys),
+    }]
+    cases = statement_cases + stock_cases + zerodha_cases
+    return {
+        "_comment": HEADER,
+        "service": "import",
+        "statement_cases": statement_cases,
+        "stock_cases": stock_cases,
+        "zerodha_cases": zerodha_cases,
+        "cases": cases,
+    }
+
+
 # ---------------------------------------------------------------------------
 
 FIXTURES: dict[str, Callable[[], dict[str, Any]]] = {
@@ -518,6 +654,7 @@ FIXTURES: dict[str, Callable[[], dict[str, Any]]] = {
     "wealth.json": wealth_fixture,
     "health.json": health_fixture,
     "assessment.json": assessment_fixture,
+    "import.json": import_fixture,
 }
 
 

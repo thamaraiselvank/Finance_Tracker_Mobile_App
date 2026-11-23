@@ -125,9 +125,12 @@ final _brokers = RegExp(
 );
 final _creditCardBill = RegExp(
   r'credit ?card (?:bill|payment|dues?)|towards (?:your )?(?:\w+ ){0,3}?credit ?card|payment (?:of .{1,25})?received (?:on|towards|for|in) (?:your )?(?:\w+ ){0,3}?(?:credit )?card|'
-  r'cc ?bill|\bcred\b.{0,30}\bbill|bill ?desk.{0,20}card|card ?bill paid|payment .{0,25}credited to (?:your )?(?:\w+ ){0,3}?card',
+  r'cc ?bill|\bcred\b.{0,30}\bbill|bill ?desk.{0,20}card|card ?bill paid|payment .{0,25}credited to (?:your )?(?:\w+ ){0,3}?card|'
+  // Bank statement wording: "CC 1234 AUTOPAY", "BILLPAY ... CREDIT CARD".
+  r'\bcc ?\d{4}\b.{0,20}(?:autopay|payment|bill)|(?:bill ?pay|autopay|\bsi\b).{0,40}credit ?card',
 );
-final _atm = RegExp(r'\batm\b|cash withdrawal|cash wdl|withdrawn at|\bnfs\b|cash w/d');
+// The last part is bank statement wording: HDFC "ATW-", "NWD-", "EAW-".
+final _atm = RegExp(r'\batm\b|cash withdrawal|cash wdl|withdrawn at|\bnfs\b|cash w/d|(?:^|\s)(?:atw|nwd|eaw)-');
 final _wallet = RegExp(r'(?:add(?:ed)? money|top[- ]?up|loaded|recharged?) (?:to|in|into) (?:your )?(?:\w+ )?wallet|wallet (?:top[- ]?up|load)|amazon pay balance|paytm wallet');
 final _self = RegExp(r'\bself[- ]?transfer|\bto self\b|own account|\bown a/?c\b|between your accounts');
 final _salary = RegExp(r'\bsalary\b|\bsal(?:ary)? cr|payroll|\bsal for\b');

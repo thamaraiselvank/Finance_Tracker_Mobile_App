@@ -441,6 +441,24 @@ class LocalCaptureService implements CaptureService {
     _db.execute('UPDATE transactions SET ${columns.keys.map((c) => '$c = ?').join(', ')} WHERE id = ?', [...columns.values, row['id']]);
   }
 
+  /// The type and category Finverse would give a payment with this text,
+  /// for other ways of adding payments (statement import). [direction] is
+  /// IN or OUT. Returns `type` (INCOME / EXPENSE / TRANSFER / IGNORE),
+  /// `category_id`, `subcategory_id`, `rule_id`, `source` (RULE, BUILTIN,
+  /// GUESS or null) and `label`.
+  Json suggest({required String text, String? merchant, required String direction}) {
+    final parsedType = direction == 'IN' ? 'INCOME' : 'EXPENSE';
+    final choice = _choose(RuleKeys.of(text: text, merchant: merchant), direction, parsedType, text, merchant);
+    return {
+      'type': choice.ignore ? 'IGNORE' : choice.type,
+      'category_id': choice.categoryId,
+      'subcategory_id': choice.subcategoryId,
+      'rule_id': choice.ruleId,
+      'source': choice.source,
+      'label': choice.label,
+    };
+  }
+
   /// Learned rule, built-in rule, or keyword guess, in that order.
   _Choice _choose(RuleKeys keys, String direction, String parsedType, String text, String? merchant) {
     for (final (kind, value) in keys.all) {

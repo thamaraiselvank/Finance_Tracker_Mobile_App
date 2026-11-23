@@ -9,12 +9,14 @@ import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
+import '../import/pdf_reader.dart';
 import '../services/errors.dart';
 import '../services/services.dart';
 import 'assessment.dart';
 import 'health_engine.dart';
 import 'local_capture.dart';
 import 'local_db.dart';
+import 'local_import.dart';
 import 'local_money.dart';
 import 'local_planning.dart';
 import 'local_plans.dart';
@@ -32,7 +34,7 @@ Future<TaxRules> loadTaxRules() async {
   return TaxRules([for (final f in files) jsonDecode(await rootBundle.loadString(f)) as Map<String, dynamic>]);
 }
 
-Services localServices(LocalDb db, {TaxRules? taxRules}) => Services(
+Services localServices(LocalDb db, {TaxRules? taxRules, StatementPdfReader pdfReader = const PdfiumStatementReader()}) => Services(
       auth: LocalProfileService(db),
       accounts: LocalAccountsService(db),
       categories: LocalCategoriesService(db),
@@ -46,7 +48,7 @@ Services localServices(LocalDb db, {TaxRules? taxRules}) => Services(
       tax: taxRules == null ? const _PendingTax() : LocalTaxService(db, taxRules),
       calculators: const LocalCalculatorsService(),
       essentials: LocalEssentialsService(db),
-      imports: const _PendingImport(),
+      imports: LocalImportService(db, pdfReader: pdfReader),
       ai: const _PendingAi(),
       capture: LocalCaptureService(db),
     );
@@ -161,18 +163,6 @@ class _PendingTax implements TaxService {
   Future<Json> profile(String taxYear) => throw _na;
   @override
   Future<Json> estimate(Json input) => throw _na;
-}
-
-class _PendingImport implements ImportService {
-  const _PendingImport();
-  static const _na = NotAvailableYetException('Import');
-  @override
-  Future<Json> parseFile({required List<int> bytes, required String filename, required String importType, String? broker, String? password}) =>
-      throw _na;
-  @override
-  Future<dynamic> commitTransactions(String accountId, List<Json> transactions) => throw _na;
-  @override
-  Future<dynamic> commitAssets(List<Json> assets) => throw _na;
 }
 
 class _PendingAi implements AiService {

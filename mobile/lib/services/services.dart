@@ -143,7 +143,15 @@ abstract class EssentialsService {
 /// Bank statement and broker holdings import.
 abstract class ImportService {
   /// Reads a file and returns a preview (`preview` rows) without saving anything.
-  Future<Json> parseFile({required List<int> bytes, required String filename, required String importType, String? broker, String? password});
+  /// [accountId] (statements, phone version) marks rows already in that account.
+  Future<Json> parseFile({
+    required List<int> bytes,
+    required String filename,
+    required String importType,
+    String? broker,
+    String? password,
+    String? accountId,
+  });
 
   /// Saves reviewed statement rows. Returns a result with a `message`.
   Future<dynamic> commitTransactions(String accountId, List<Json> transactions);

@@ -265,7 +265,7 @@ class RemoteImportService implements ImportService {
   final ApiClient _api;
 
   @override
-  Future<Json> parseFile({required List<int> bytes, required String filename, required String importType, String? broker, String? password}) async =>
+  Future<Json> parseFile({required List<int> bytes, required String filename, required String importType, String? broker, String? password, String? accountId}) async =>
       _map(await _api.postFile('/import/parse-file', bytes: bytes, filename: filename, fields: {
         'import_type': importType,
         'broker': ?broker,
