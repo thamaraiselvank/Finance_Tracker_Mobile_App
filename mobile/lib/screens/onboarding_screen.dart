@@ -117,7 +117,10 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text("Let's personalise Finverse"),
-        actions: [TextButton(onPressed: () => context.read<AppState>().signOut(), child: const Text('Sign out'))],
+        actions: [
+          if (!context.read<AppState>().isLocal)
+            TextButton(onPressed: () => context.read<AppState>().signOut(), child: const Text('Sign out')),
+        ],
       ),
       body: SafeArea(
         child: Form(

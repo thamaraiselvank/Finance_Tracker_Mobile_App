@@ -38,6 +38,9 @@ class RemoteAuthService implements AuthService {
   final ApiClient _api;
 
   @override
+  bool get hasAccounts => true;
+
+  @override
   set onSessionExpired(void Function()? callback) => _api.onSessionExpired = callback;
 
   @override

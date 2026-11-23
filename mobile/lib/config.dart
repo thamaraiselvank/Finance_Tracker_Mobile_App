@@ -13,6 +13,16 @@ class AppConfig {
 
   static const String appName = 'Finverse';
 
+  /// Where data lives:
+  ///  * `cloud` (default): the live backend, with sign-in. Unchanged app.
+  ///  * `local`: everything on the phone in an encrypted SQLite database,
+  ///    no sign-in and no server. Areas not yet moved to the phone show a
+  ///    "coming soon" message.
+  ///
+  ///   flutter run --dart-define=FINVERSE_MODE=local
+  static const String dataMode = String.fromEnvironment('FINVERSE_MODE', defaultValue: 'cloud');
+  static bool get isLocal => dataMode == 'local';
+
   /// Network timeout for API calls. The live backend can take a few
   /// seconds to wake up after being idle (Cloud Run cold start).
   static const Duration requestTimeout = Duration(seconds: 45);

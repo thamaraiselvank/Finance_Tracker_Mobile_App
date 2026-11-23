@@ -1,32 +1,55 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import 'config.dart';
 import 'core/api_client.dart';
+import 'core/app_lock.dart';
 import 'core/app_state.dart';
 import 'core/theme.dart';
+import 'local/local_db.dart';
+import 'local/local_services.dart';
 import 'screens/auth_screen.dart';
 import 'screens/home_shell.dart';
 import 'screens/onboarding_screen.dart';
 import 'services/remote/remote_services.dart';
 import 'services/services.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // The one place that decides where data comes from. Swapping these
-  // implementations for local (SQLite) ones needs no screen changes.
-  final services = remoteServices(ApiClient());
+
+  // The one place that decides where data comes from. Screens only see
+  // `Services`, so they work the same with either implementation.
+  final Services services;
+  AppLock? lock;
+  if (AppConfig.isLocal) {
+    try {
+      services = localServices(await LocalDb.openEncrypted());
+    } catch (e) {
+      runApp(_StartupError(e.toString()));
+      return;
+    }
+    lock = AppLock();
+    await lock.init();
+  } else {
+    services = remoteServices(ApiClient());
+  }
+
   final state = AppState(services.auth)..bootstrap();
   runApp(MultiProvider(
     providers: [
       Provider<Services>.value(value: services),
       ChangeNotifierProvider<AppState>.value(value: state),
+      if (lock != null) ChangeNotifierProvider<AppLock>.value(value: lock),
     ],
-    child: const FinverseApp(),
+    child: FinverseApp(lock: lock),
   ));
 }
 
 class FinverseApp extends StatelessWidget {
-  const FinverseApp({super.key});
+  const FinverseApp({super.key, this.lock});
+
+  /// Only in the phone-only version.
+  final AppLock? lock;
 
   @override
   Widget build(BuildContext context) {
@@ -37,6 +60,7 @@ class FinverseApp extends StatelessWidget {
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
       themeMode: state.themeMode,
+      builder: lock == null ? null : (context, child) => AppLockGate(lock: lock!, child: child!),
       home: switch (state.status) {
         AuthStatus.loading => const _Splash(),
         AuthStatus.signedOut => const AuthScreen(),
@@ -58,6 +82,35 @@ class _Splash extends StatelessWidget {
           SizedBox(height: 20),
           CircularProgressIndicator(),
         ]),
+      ),
+    );
+  }
+}
+
+/// Shown if the on-phone database can't be opened (should never happen; it
+/// would mean the stored encryption key and the database file don't match).
+class _StartupError extends StatelessWidget {
+  const _StartupError(this.message);
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: buildTheme(Brightness.light),
+      home: Scaffold(
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              const Icon(Icons.error_outline, size: 48),
+              const SizedBox(height: 16),
+              const Text('Finverse could not open your data on this phone.', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.w700)),
+              const SizedBox(height: 8),
+              Text(message, textAlign: TextAlign.center),
+            ]),
+          ),
+        ),
       ),
     );
   }

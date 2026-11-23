@@ -2,6 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 import '../core/api_client.dart';
 import '../core/format.dart';
+import '../services/errors.dart';
 import '../widgets/common.dart';
 
 const _welcome =
@@ -107,6 +108,8 @@ class _AiAdvisorScreenState extends State<AiAdvisorScreen> {
         }
       }
       _messages.add(_Msg(false, text));
+    } on ServiceException catch (e) {
+      _messages.add(_Msg(false, e.message));
     } catch (_) {
       _messages.add(_Msg(false, "I'm having trouble analysing that right now. Please try again."));
     } finally {

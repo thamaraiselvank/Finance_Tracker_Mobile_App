@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../core/app_lock.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
 import '../widgets/common.dart';
@@ -76,13 +77,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
       body: Form(
         key: _formKey,
         child: ListView(padding: const EdgeInsets.all(16), children: [
-          Card(
-            child: ListTile(
-              leading: CircleAvatar(child: Text(state.displayName.isNotEmpty ? state.displayName[0].toUpperCase() : '?')),
-              title: Text(state.user?['username']?.toString() ?? ''),
-              subtitle: Text(state.user?['email']?.toString() ?? ''),
+          if (state.isLocal)
+            const _LocalDataCard()
+          else
+            Card(
+              child: ListTile(
+                leading: CircleAvatar(child: Text(state.displayName.isNotEmpty ? state.displayName[0].toUpperCase() : '?')),
+                title: Text(state.user?['username']?.toString() ?? ''),
+                subtitle: Text(state.user?['email']?.toString() ?? ''),
+              ),
             ),
-          ),
           const SectionHeader('Personal details'),
           TextInput(controller: _name, label: 'Full name'),
           DropdownInput<String>(
@@ -100,15 +104,62 @@ class _ProfileScreenState extends State<ProfileScreen> {
           AmountField(controller: _emergency, label: 'Emergency fund', prefix: symbol, allowZero: true),
           AmountField(controller: _savingsRate, label: 'Target savings rate', suffix: '%', allowZero: true),
           SaveButton(busy: _busy, onPressed: _save, label: 'Save profile'),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
-            onPressed: () => showFormSheet(context, title: 'Change password', child: const _ChangePasswordForm()),
-            icon: const Icon(Icons.lock_outline),
-            label: const Text('Change password'),
-          ),
+          if (!state.isLocal) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(minimumSize: const Size.fromHeight(48)),
+              onPressed: () => showFormSheet(context, title: 'Change password', child: const _ChangePasswordForm()),
+              icon: const Icon(Icons.lock_outline),
+              label: const Text('Change password'),
+            ),
+          ],
         ]),
       ),
+    );
+  }
+}
+
+/// Phone-only version: explains where data lives and offers the app lock.
+class _LocalDataCard extends StatefulWidget {
+  const _LocalDataCard();
+
+  @override
+  State<_LocalDataCard> createState() => _LocalDataCardState();
+}
+
+class _LocalDataCardState extends State<_LocalDataCard> {
+  bool _busy = false;
+
+  Future<void> _toggle(AppLock lock, bool value) async {
+    setState(() => _busy = true);
+    try {
+      await lock.setEnabled(value);
+    } catch (e) {
+      if (mounted) context.showSnack(e.toString(), error: true);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final lock = context.watch<AppLock>();
+    return Card(
+      child: Column(children: [
+        const ListTile(
+          leading: CircleAvatar(child: Icon(Icons.phone_android)),
+          title: Text('Your data stays on this phone'),
+          subtitle: Text('Stored encrypted on this device only. No account, no server.'),
+        ),
+        const Divider(height: 1),
+        SwitchListTile(
+          secondary: const Icon(Icons.fingerprint),
+          title: const Text('App lock'),
+          subtitle: const Text('Ask for fingerprint, face or phone PIN when opening Finverse'),
+          value: lock.enabled,
+          onChanged: _busy ? null : (v) => _toggle(lock, v),
+        ),
+      ]),
     );
   }
 }

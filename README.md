@@ -29,6 +29,33 @@ flutter run --dart-define=API_BASE_URL=http://<your-laptop-ip>:8000/api
 
 (Use your laptop's Wi-Fi IP, not `127.0.0.1`, because the phone is a separate device.)
 
+## Offline (phone-only) version, in progress
+
+The app is moving to a **local-first** design: all data in an encrypted SQLite
+database on the phone, no account and no server. Run it with:
+
+```powershell
+flutter run --dart-define=FINVERSE_MODE=local
+flutter build apk --dart-define=FINVERSE_MODE=local
+```
+
+In this mode:
+
+- There is no sign-in. A local profile is created on first launch, and an
+  optional **App lock** (fingerprint / face / phone PIN) is in More → Profile.
+- The database file is encrypted (SQLite3 Multiple Ciphers). Its random key is
+  kept in the Android Keystore and never leaves the phone. Android auto-backup
+  is off, because a restored file could not be decrypted on a new phone.
+- **Already on the phone:** accounts, categories, transactions, budgets, and
+  net worth from account balances.
+- **Not moved yet** (these show "not in the offline version yet"): investments,
+  goals, debts, insurance, bills & recurring, tax, calculators, financial
+  health, import and AI. Each later step moves more areas to the phone, and
+  local data is never mixed with server data.
+
+The default build (without `FINVERSE_MODE`) is unchanged and still uses the
+live backend with sign-in.
+
 ## Run on an Android phone
 
 1. On the phone: enable **Developer options** and **USB debugging**.
@@ -74,7 +101,9 @@ flutter run
 | `core/app_state.dart` | Signed-in user, theme, hide-amounts, sign in/out |
 | `core/format.dart` | Currency (₹ lakh/crore), dates, JSON number helpers |
 | `services/services.dart` | The data layer: one interface per area (accounts, transactions, goals, tax…). Screens only talk to these, via `context.services` |
-| `services/remote/` | Current implementations, which call the backend. They are being replaced one by one with local (SQLite) versions |
+| `services/remote/` | Cloud implementations, which call the backend (default build) |
+| `local/` | Phone-only implementations: encrypted SQLite database (`local_db.dart`, `schema.dart`), Money services (`local_money.dart`), profile and placeholders (`local_services.dart`), Python-compatible rounding (`py_round.dart`) |
+| `core/app_lock.dart` | Fingerprint / PIN app lock for the phone-only version |
 | `screens/` | Auth, onboarding, Home, Money, Wealth, Goals, Debts, Insurance, AI advisor, Calculators, Profile |
 | `widgets/` | Shared UI: stat tiles, forms, empty/error states |
 

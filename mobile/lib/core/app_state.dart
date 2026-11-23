@@ -29,6 +29,9 @@ class AppState extends ChangeNotifier {
 
   Money get money => Money(user?['currency'] as String?);
 
+  /// Phone-only version: no sign-in, data in the on-phone database.
+  bool get isLocal => !auth.hasAccounts;
+
   bool get needsOnboarding {
     if (user == null) return false;
     final onboarded = user!['is_onboarded'] == true;
@@ -50,6 +53,13 @@ class AppState extends ChangeNotifier {
     };
 
     final hasSession = await auth.restoreSession();
+    if (isLocal) {
+      // The profile lives in the on-phone database: read it directly.
+      await refreshUser();
+      status = AuthStatus.signedIn;
+      notifyListeners();
+      return;
+    }
     final cachedUser = await _storage.read(key: _userKey);
     if (!hasSession || cachedUser == null) {
       status = AuthStatus.signedOut;
@@ -109,7 +119,9 @@ class AppState extends ChangeNotifier {
 
   Future<void> _setUser(Map<String, dynamic> value) async {
     user = value;
-    await _storage.write(key: _userKey, value: jsonEncode(value));
+    // The cloud profile is cached for instant start-up; the local one is
+    // already on the phone (in the encrypted database), so no copy is kept.
+    if (!isLocal) await _storage.write(key: _userKey, value: jsonEncode(value));
     notifyListeners();
   }
 

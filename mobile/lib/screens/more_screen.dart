@@ -39,7 +39,7 @@ class MoreScreen extends StatelessWidget {
           child: ListTile(
             leading: CircleAvatar(child: Text(state.displayName.isNotEmpty ? state.displayName[0].toUpperCase() : '?')),
             title: Text(state.displayName, style: const TextStyle(fontWeight: FontWeight.w600)),
-            subtitle: Text(state.user?['email']?.toString() ?? ''),
+            subtitle: Text(state.isLocal ? 'Profile & app lock' : state.user?['email']?.toString() ?? ''),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _push(context, const ProfileScreen()),
           ),
@@ -87,19 +87,20 @@ class MoreScreen extends StatelessWidget {
               value: state.hideAmounts,
               onChanged: (_) => context.read<AppState>().toggleHideAmounts(),
             ),
-            ListTile(
-              leading: Icon(Icons.logout, color: Theme.of(context).colorScheme.error),
-              title: Text('Sign out', style: TextStyle(color: Theme.of(context).colorScheme.error)),
-              onTap: () async {
-                final ok = await confirmDialog(context, title: 'Sign out?', message: 'You will need to sign in again to use Finverse.', confirmLabel: 'Sign out');
-                if (ok && context.mounted) await context.read<AppState>().signOut();
-              },
-            ),
+            if (!state.isLocal)
+              ListTile(
+                leading: Icon(Icons.logout, color: Theme.of(context).colorScheme.error),
+                title: Text('Sign out', style: TextStyle(color: Theme.of(context).colorScheme.error)),
+                onTap: () async {
+                  final ok = await confirmDialog(context, title: 'Sign out?', message: 'You will need to sign in again to use Finverse.', confirmLabel: 'Sign out');
+                  if (ok && context.mounted) await context.read<AppState>().signOut();
+                },
+              ),
           ]),
         ),
         const SizedBox(height: 16),
         Text(
-          'Finverse mobile • ${Uri.parse(AppConfig.apiBaseUrl).host}',
+          state.isLocal ? 'Finverse mobile • offline, data stays on this phone' : 'Finverse mobile • ${Uri.parse(AppConfig.apiBaseUrl).host}',
           textAlign: TextAlign.center,
           style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.outline),
         ),

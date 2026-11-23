@@ -14,6 +14,10 @@ typedef Json = Map<String, dynamic>;
 
 /// Sign-in and the user's profile.
 abstract class AuthService {
+  /// True for the cloud version (sign-in, password). False on the phone-only
+  /// version, which has a local profile and an optional app lock instead.
+  bool get hasAccounts;
+
   /// Called when the session can no longer be renewed (user must sign in again).
   set onSessionExpired(void Function()? callback);
 

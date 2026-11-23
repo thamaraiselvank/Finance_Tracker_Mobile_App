@@ -1,0 +1,221 @@
+import 'package:sqlite3/sqlite3.dart';
+
+/// Database schema, as an ordered list of migrations.
+///
+/// The database stores how many have run in `PRAGMA user_version`; on open,
+/// any newer ones run in order inside a transaction. Never edit a migration
+/// that has shipped: add a new one at the end instead.
+///
+/// Conventions (differences from the PostgreSQL schema in backend/db):
+///  * Money is stored as whole minor units (paise/cents) in `*_minor`
+///    INTEGER columns, so balances never drift through float rounding.
+///  * Dates are 'YYYY-MM-DD' TEXT; timestamps are ISO-8601 UTC TEXT.
+///  * Booleans are INTEGER 0/1.
+///  * There is no users table or user_id column: the phone has one owner.
+///    The single `profile` row replaces `users`.
+const List<String> migrations = [_v1];
+
+void migrate(Database db) {
+  final current = db.select('PRAGMA user_version').first.values.first as int;
+  for (var version = current; version < migrations.length; version++) {
+    db.execute('BEGIN IMMEDIATE');
+    try {
+      db.execute(migrations[version]);
+      if (version == 0) _seedCategories(db);
+      db.execute('PRAGMA user_version = ${version + 1}');
+      db.execute('COMMIT');
+    } catch (_) {
+      db.execute('ROLLBACK');
+      rethrow;
+    }
+  }
+}
+
+const _v1 = '''
+CREATE TABLE profile (
+  id TEXT PRIMARY KEY,
+  full_name TEXT,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  current_age INTEGER NOT NULL DEFAULT 28,
+  target_retirement_age INTEGER NOT NULL DEFAULT 50,
+  monthly_income_minor INTEGER NOT NULL DEFAULT 0,
+  monthly_expense_minor INTEGER NOT NULL DEFAULT 0,
+  target_savings_rate REAL NOT NULL DEFAULT 30,
+  emergency_fund_minor INTEGER NOT NULL DEFAULT 0,
+  dependents_count INTEGER NOT NULL DEFAULT 0,
+  health_dependents TEXT NOT NULL DEFAULT '[]',
+  is_onboarded INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- Small key/value store for app settings (app lock, last SMS scan, ...).
+CREATE TABLE app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
+CREATE TABLE categories (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('INCOME', 'EXPENSE', 'TRANSFER')),
+  icon TEXT DEFAULT 'Tag',
+  color TEXT DEFAULT '#10B981',
+  is_system INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE subcategories (
+  id TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_subcategories_category ON subcategories(category_id);
+
+CREATE TABLE accounts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  account_type TEXT NOT NULL CHECK (account_type IN ('SAVINGS', 'CURRENT', 'CREDIT_CARD', 'WALLET', 'FIXED_DEPOSIT', 'INVESTMENT', 'OTHER')),
+  balance_minor INTEGER NOT NULL DEFAULT 0,
+  currency TEXT NOT NULL DEFAULT 'INR',
+  institution TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE transactions (
+  id TEXT PRIMARY KEY,
+  account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+  category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+  subcategory_id TEXT REFERENCES subcategories(id) ON DELETE SET NULL,
+  type TEXT NOT NULL CHECK (type IN ('INCOME', 'EXPENSE', 'TRANSFER')),
+  amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  date TEXT NOT NULL,
+  description TEXT NOT NULL,
+  notes TEXT,
+  tags TEXT,
+  scheduled_cashflow_id TEXT,
+  scheduled_occurrence_date TEXT,
+  -- Automatic capture (SMS, UPI notifications, Share to Finverse).
+  -- Only CONFIRMED transactions count towards balances, totals and budgets;
+  -- PENDING ones wait in the review inbox, IGNORED ones are kept so the same
+  -- message is not captured twice.
+  source TEXT NOT NULL DEFAULT 'MANUAL' CHECK (source IN ('MANUAL', 'SMS', 'UPI_NOTIFICATION', 'SHARE', 'IMPORT', 'SCHEDULE')),
+  status TEXT NOT NULL DEFAULT 'CONFIRMED' CHECK (status IN ('PENDING', 'CONFIRMED', 'IGNORED')),
+  merchant TEXT,
+  upi_ref TEXT,
+  account_last4 TEXT,
+  raw_text TEXT,
+  dedup_key TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX idx_transactions_date ON transactions(status, date DESC, created_at DESC);
+CREATE INDEX idx_transactions_account ON transactions(account_id);
+CREATE INDEX idx_transactions_category ON transactions(category_id);
+CREATE UNIQUE INDEX idx_transactions_dedup ON transactions(dedup_key) WHERE dedup_key IS NOT NULL;
+CREATE UNIQUE INDEX idx_transactions_scheduled_occurrence
+  ON transactions(scheduled_cashflow_id, scheduled_occurrence_date)
+  WHERE scheduled_cashflow_id IS NOT NULL AND scheduled_occurrence_date IS NOT NULL;
+
+CREATE TABLE budgets (
+  id TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  monthly_limit_minor INTEGER NOT NULL DEFAULT 0,
+  month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+  year INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (category_id, month, year)
+);
+''';
+
+/// Default categories, identical to the backend seed (same ids), so data
+/// moved between the web app and the phone keeps its categories.
+const systemCategories = [
+  ('00000000-0000-0000-0000-000000000001', 'Salary', 'INCOME', 'Briefcase', '#10B981'),
+  ('00000000-0000-0000-0000-000000000002', 'Investments & Returns', 'INCOME', 'TrendingUp', '#059669'),
+  ('00000000-0000-0000-0000-000000000003', 'Freelance / Business', 'INCOME', 'Laptop', '#34D399'),
+  ('00000000-0000-0000-0000-000000000004', 'Rental Income', 'INCOME', 'Home', '#6EE7B7'),
+  ('00000000-0000-0000-0000-000000000005', 'Other Income', 'INCOME', 'PlusCircle', '#A7F3D0'),
+  ('00000000-0000-0000-0000-000000000010', 'Housing & Rent', 'EXPENSE', 'Home', '#EF4444'),
+  ('00000000-0000-0000-0000-000000000011', 'Food & Groceries', 'EXPENSE', 'Utensils', '#F59E0B'),
+  ('00000000-0000-0000-0000-000000000012', 'Utilities & Bills', 'EXPENSE', 'Zap', '#6366F1'),
+  ('00000000-0000-0000-0000-000000000013', 'Transportation & Fuel', 'EXPENSE', 'Car', '#EC4899'),
+  ('00000000-0000-0000-0000-000000000014', 'Healthcare & Medical', 'EXPENSE', 'Activity', '#14B8A6'),
+  ('00000000-0000-0000-0000-000000000015', 'Shopping & Lifestyle', 'EXPENSE', 'ShoppingBag', '#8B5CF6'),
+  ('00000000-0000-0000-0000-000000000016', 'Entertainment & Leisure', 'EXPENSE', 'Film', '#F97316'),
+  ('00000000-0000-0000-0000-000000000017', 'Insurance Premiums', 'EXPENSE', 'ShieldCheck', '#3B82F6'),
+  ('00000000-0000-0000-0000-000000000018', 'Loan EMI & Debt Payoff', 'EXPENSE', 'CreditCard', '#DC2626'),
+  ('00000000-0000-0000-0000-000000000019', 'Education & Courses', 'EXPENSE', 'BookOpen', '#0284C7'),
+  ('00000000-0000-0000-0000-000000000020', 'Other Expenses', 'EXPENSE', 'MinusCircle', '#64748B'),
+  ('00000000-0000-0000-0000-000000000021', 'Social & Travel', 'EXPENSE', 'Plane', '#D946EF'),
+];
+
+/// Default subcategories, as in the backend seed.
+const systemSubcategories = [
+  ('00000000-0000-0000-0000-000000000001', 'Monthly Salary'),
+  ('00000000-0000-0000-0000-000000000001', 'Bonus & Incentive'),
+  ('00000000-0000-0000-0000-000000000002', 'Dividends'),
+  ('00000000-0000-0000-0000-000000000002', 'Stock Capital Gains'),
+  ('00000000-0000-0000-0000-000000000002', 'Mutual Fund Gains'),
+  ('00000000-0000-0000-0000-000000000002', 'Interest (FD/Savings)'),
+  ('00000000-0000-0000-0000-000000000010', 'Apartment Rent'),
+  ('00000000-0000-0000-0000-000000000010', 'Maintenance & Repairs'),
+  ('00000000-0000-0000-0000-000000000010', 'Property Tax'),
+  ('00000000-0000-0000-0000-000000000011', 'Daily Groceries'),
+  ('00000000-0000-0000-0000-000000000011', 'Dining Out'),
+  ('00000000-0000-0000-0000-000000000011', 'Coffee & Snacks'),
+  ('00000000-0000-0000-0000-000000000012', 'Electricity Bill'),
+  ('00000000-0000-0000-0000-000000000012', 'Water & Gas'),
+  ('00000000-0000-0000-0000-000000000012', 'Broadband & Mobile'),
+  ('00000000-0000-0000-0000-000000000012', 'DTH & TV Bill'),
+  ('00000000-0000-0000-0000-000000000013', 'Fuel & Petrol'),
+  ('00000000-0000-0000-0000-000000000013', 'Cab / Taxi'),
+  ('00000000-0000-0000-0000-000000000013', 'Auto / Rickshaw'),
+  ('00000000-0000-0000-0000-000000000013', 'Bike / Scooter'),
+  ('00000000-0000-0000-0000-000000000013', 'Vehicle Service'),
+  ('00000000-0000-0000-0000-000000000014', 'Doctor Consultations'),
+  ('00000000-0000-0000-0000-000000000014', 'Medicines & Pharmacy'),
+  ('00000000-0000-0000-0000-000000000014', 'Lab Tests'),
+  ('00000000-0000-0000-0000-000000000015', 'Clothing & Dresses'),
+  ('00000000-0000-0000-0000-000000000015', 'Shoes & Slippers'),
+  ('00000000-0000-0000-0000-000000000015', 'Eyewear & Glasses'),
+  ('00000000-0000-0000-0000-000000000015', 'Accessories'),
+  ('00000000-0000-0000-0000-000000000015', 'Personal Care'),
+  ('00000000-0000-0000-0000-000000000017', 'Health Insurance Premium'),
+  ('00000000-0000-0000-0000-000000000017', 'Term Life Insurance Premium'),
+  ('00000000-0000-0000-0000-000000000017', 'Bike Insurance Premium'),
+  ('00000000-0000-0000-0000-000000000017', 'Car Insurance Premium'),
+  ('00000000-0000-0000-0000-000000000017', 'Travel Insurance Premium'),
+  ('00000000-0000-0000-0000-000000000018', 'Home Loan EMI'),
+  ('00000000-0000-0000-0000-000000000018', 'Car Loan EMI'),
+  ('00000000-0000-0000-0000-000000000018', 'Personal Loan EMI'),
+  ('00000000-0000-0000-0000-000000000016', 'Movies & Events'),
+  ('00000000-0000-0000-0000-000000000016', 'Hobbies & Games'),
+  ('00000000-0000-0000-0000-000000000019', 'Tuition & School Fees'),
+  ('00000000-0000-0000-0000-000000000019', 'Books & Supplies'),
+  ('00000000-0000-0000-0000-000000000019', 'Online Courses'),
+  ('00000000-0000-0000-0000-000000000021', 'Friends Outing'),
+  ('00000000-0000-0000-0000-000000000021', 'Trips & Vacations'),
+  ('00000000-0000-0000-0000-000000000021', 'Events & Celebrations'),
+];
+
+void _seedCategories(Database db) {
+  const seededAt = '2026-01-01T00:00:00.000Z';
+  final insertCategory = db.prepare(
+    'INSERT INTO categories (id, name, type, icon, color, is_system, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)',
+  );
+  for (final (id, name, type, icon, color) in systemCategories) {
+    insertCategory.execute([id, name, type, icon, color, seededAt]);
+  }
+  insertCategory.close();
+
+  // Fixed ids so every phone has the same default subcategories.
+  final insertSub = db.prepare('INSERT INTO subcategories (id, category_id, name, created_at) VALUES (?, ?, ?, ?)');
+  for (var i = 0; i < systemSubcategories.length; i++) {
+    final (categoryId, name) = systemSubcategories[i];
+    insertSub.execute(['00000000-0000-0000-0001-${(i + 1).toString().padLeft(12, '0')}', categoryId, name, seededAt]);
+  }
+  insertSub.close();
+}

@@ -190,10 +190,32 @@ def tax_fixture() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Python's round() (pyRound in Dart)
+# ---------------------------------------------------------------------------
+
+def py_round_fixture() -> dict[str, Any]:
+    """Python round(x, d) results the Dart pyRound() helper must reproduce."""
+    import random
+
+    rng = random.Random(20261123)
+    values: list[float] = [
+        0.125, 0.375, 2.675, 1.005, 2.5, 3.5, -0.125, -2.5, 0.5, 1.5, 0.045, 1234567.125,
+        19566.165, 0.0, 100.0, 33.335, 66.665, 1e-07, 123456789.995, 7.0 / 3.0, 2.0 / 3.0,
+    ]
+    values += [rng.uniform(-1_000_000, 1_000_000) for _ in range(400)]
+    values += [round(rng.uniform(0, 100_000), 3) for _ in range(400)]  # three decimals: many near-ties
+    values += [rng.randint(0, 10_000_000) / 300.0 for _ in range(200)]  # money / 3 averages
+    values += [k / 8 for k in range(-40, 41)]  # exact binary ties at 2 digits
+    cases = [{"x": x, "digits": d, "result": round(x, d)} for x in values for d in (0, 1, 2)]
+    return {"_comment": HEADER, "service": "pyRound", "cases": cases}
+
+
+# ---------------------------------------------------------------------------
 
 FIXTURES: dict[str, Callable[[], dict[str, Any]]] = {
     "calculators.json": calculators_fixture,
     "tax.json": tax_fixture,
+    "py_round.json": py_round_fixture,
 }
 
 
