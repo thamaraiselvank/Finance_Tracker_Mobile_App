@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import 'capture/sms_sync.dart';
 import 'config.dart';
 import 'core/api_client.dart';
 import 'core/app_lock.dart';
@@ -35,11 +36,15 @@ Future<void> main() async {
   }
 
   final state = AppState(services.auth)..bootstrap();
+  // Phone-only version: read new bank SMS into the review inbox.
+  final capture = services.capture;
+  final sms = capture == null ? null : (SmsSync(capture)..init());
   runApp(MultiProvider(
     providers: [
       Provider<Services>.value(value: services),
       ChangeNotifierProvider<AppState>.value(value: state),
       if (lock != null) ChangeNotifierProvider<AppLock>.value(value: lock),
+      if (sms != null) ChangeNotifierProvider<SmsSync>.value(value: sms),
     ],
     child: FinverseApp(lock: lock),
   ));

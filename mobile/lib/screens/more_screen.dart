@@ -13,6 +13,7 @@ import 'import_screen.dart';
 import 'insurance_screen.dart';
 import 'learn_screen.dart';
 import 'profile_screen.dart';
+import 'review_inbox_screen.dart';
 import 'schedules_screen.dart';
 import 'tax_screen.dart';
 
@@ -47,6 +48,8 @@ class MoreScreen extends StatelessWidget {
         const SectionHeader('Money tools'),
         Card(
           child: Column(children: [
+            if (context.services.capture != null)
+              _item(context, Icons.inbox_outlined, 'Review inbox', 'Payments read from bank SMS', const ReviewInboxScreen()),
             _item(context, Icons.event_repeat, 'Bills & recurring', 'Rent, EMIs, subscriptions, salary', const SchedulesScreen()),
             _item(context, Icons.upload_file, 'Import', 'Bank statements & broker holdings', const ImportScreen()),
             _item(context, Icons.receipt_outlined, 'Income tax estimate', 'Old vs new regime (India)', const TaxScreen()),

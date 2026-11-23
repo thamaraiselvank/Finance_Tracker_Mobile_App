@@ -6,7 +6,9 @@ import '../core/format.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
 import '../widgets/transaction_tile.dart';
+import '../capture/sms_sync.dart';
 import 'essentials_screen.dart';
+import 'review_inbox_screen.dart';
 import 'home_shell.dart';
 import 'schedules_screen.dart';
 
@@ -149,6 +151,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final gaps = (d.insurance['critical_gaps'] as List? ?? []).map((e) => e.toString()).toList();
 
           return ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 96), children: [
+            _CaptureBanner(onReturn: reload),
             _NetWorthCard(wealth: d.wealth),
             const SectionHeader('This month'),
             StatGrid(children: [
@@ -240,6 +243,52 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ]);
         },
+      ),
+    );
+  }
+}
+
+/// Phone-only version: "N payments to review", or an invitation to turn on
+/// reading bank SMS. Hidden in the cloud version.
+class _CaptureBanner extends StatelessWidget {
+  const _CaptureBanner({required this.onReturn});
+  final VoidCallback onReturn;
+
+  @override
+  Widget build(BuildContext context) {
+    final sync = context.watch<SmsSync?>();
+    if (sync == null) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+
+    Future<void> open() async {
+      await Navigator.push(context, MaterialPageRoute(builder: (_) => const ReviewInboxScreen()));
+      onReturn();
+    }
+
+    final (IconData icon, String title, String subtitle) = switch (sync) {
+      _ when sync.pendingCount > 0 => (
+          Icons.inbox,
+          '${sync.pendingCount} payment${sync.pendingCount == 1 ? '' : 's'} to review',
+          'Swipe to add them to Money in seconds',
+        ),
+      _ when sync.scanning => (Icons.sms_outlined, 'Reading bank SMS…', 'New payments will appear for review'),
+      _ when sync.supported && !sync.granted => (
+          Icons.sms_outlined,
+          'Record payments automatically',
+          'Let Finverse read bank SMS on this phone. No typing.',
+        ),
+      _ => (Icons.inbox_outlined, '', ''),
+    };
+    if (title.isEmpty) return const SizedBox.shrink();
+    return Card(
+      color: theme.colorScheme.primaryContainer,
+      margin: const EdgeInsets.only(bottom: 12),
+      child: ListTile(
+        leading: Icon(icon, color: theme.colorScheme.onPrimaryContainer),
+        title: Text(title, style: TextStyle(fontWeight: FontWeight.w700, color: theme.colorScheme.onPrimaryContainer)),
+        subtitle: Text(subtitle, style: TextStyle(color: theme.colorScheme.onPrimaryContainer)),
+        trailing: Icon(Icons.chevron_right, color: theme.colorScheme.onPrimaryContainer),
+        onTap: open,
       ),
     );
   }

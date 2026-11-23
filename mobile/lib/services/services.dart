@@ -158,6 +158,56 @@ abstract class AiService {
   Future<Json> financialAssessment(Json answers);
 }
 
+/// A message that may describe a payment: a bank SMS today, later also UPI
+/// app notifications and text shared to Finverse.
+class CapturedMessage {
+  const CapturedMessage({required this.source, required this.sender, required this.body, required this.receivedAt});
+
+  /// 'SMS', 'UPI_NOTIFICATION' or 'SHARE' (same values as transactions.source).
+  final String source;
+  final String sender;
+  final String body;
+  final DateTime receivedAt;
+}
+
+/// Automatic capture and the review inbox (phone-only version).
+///
+/// Captured payments wait as *pending* until the user confirms (swipe right)
+/// or ignores (swipe left) them. Only confirmed ones affect balances, totals
+/// and budgets.
+abstract class CaptureService {
+  /// Parses the messages and adds new payments to the inbox. Returns counts:
+  /// `read`, `added`, `duplicates`, `skipped` (not a payment).
+  Future<Json> ingest(List<CapturedMessage> messages);
+
+  /// Pending transactions, newest first, in TransactionOut shape plus
+  /// `merchant`, `bank`, `account_last4`, `upi_ref`, `raw_text`, `occurred_at`.
+  Future<List<Json>> pending();
+  Future<int> pendingCount();
+
+  /// Changes a pending transaction without confirming it (category, account,
+  /// amount, type, description, date).
+  Future<void> updatePending(String id, Json changes);
+
+  /// Applies [changes] (optional) and confirms. Needs an account. Learns the
+  /// merchant's category and the account's last digits for next time.
+  Future<void> confirm(String id, [Json changes = const {}]);
+
+  /// Hides the payment. It is remembered, so the same SMS is never added again.
+  Future<void> ignore(String id);
+
+  /// Undo: puts a confirmed or ignored payment back in the inbox.
+  Future<void> reopen(String id);
+
+  /// Creates an account like "HDFC Bank ••1234" from a pending payment and
+  /// assigns it to every pending payment with the same last digits.
+  Future<String> createAccountFor(String id);
+
+  /// When bank SMS were last read (null if never).
+  Future<DateTime?> lastSmsScan();
+  Future<void> setLastSmsScan(DateTime time);
+}
+
 /// All services together, provided once at the top of the app.
 class Services {
   const Services({
@@ -176,6 +226,7 @@ class Services {
     required this.essentials,
     required this.imports,
     required this.ai,
+    this.capture,
   });
 
   final AuthService auth;
@@ -193,4 +244,7 @@ class Services {
   final EssentialsService essentials;
   final ImportService imports;
   final AiService ai;
+
+  /// SMS capture and review inbox. Null in the cloud version.
+  final CaptureService? capture;
 }

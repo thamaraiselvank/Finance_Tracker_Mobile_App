@@ -13,7 +13,7 @@ import 'package:sqlite3/sqlite3.dart';
 ///  * Booleans are INTEGER 0/1.
 ///  * There is no users table or user_id column: the phone has one owner.
 ///    The single `profile` row replaces `users`.
-const List<String> migrations = [_v1];
+const List<String> migrations = [_v1, _v2];
 
 void migrate(Database db) {
   final current = db.select('PRAGMA user_version').first.values.first as int;
@@ -127,6 +127,29 @@ CREATE TABLE budgets (
   year INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   UNIQUE (category_id, month, year)
+);
+''';
+
+/// v2: automatic capture from SMS (and later UPI notifications / Share).
+const _v2 = '''
+-- Exact time of a captured payment (for spotting the same payment twice),
+-- the bank it came from, and a normalised merchant name for learned rules.
+ALTER TABLE transactions ADD COLUMN occurred_at TEXT;
+ALTER TABLE transactions ADD COLUMN bank TEXT;
+ALTER TABLE transactions ADD COLUMN merchant_key TEXT;
+CREATE INDEX idx_transactions_occurred ON transactions(amount_minor, occurred_at);
+
+-- Last digits of the bank account / card, learned when the user confirms a
+-- captured transaction, so later SMS go to the right account automatically.
+ALTER TABLE accounts ADD COLUMN last4 TEXT;
+
+-- "Swiggy is Food": remembered from the user's choices in the review inbox.
+CREATE TABLE merchant_rules (
+  merchant_key TEXT PRIMARY KEY,
+  category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
+  subcategory_id TEXT REFERENCES subcategories(id) ON DELETE SET NULL,
+  hits INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
 );
 ''';
 

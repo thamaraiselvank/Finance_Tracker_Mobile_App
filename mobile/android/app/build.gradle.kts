@@ -14,7 +14,10 @@ val keystoreProperties = Properties().apply {
 
 android {
     namespace = "com.finverse.finance_tracker_mobile"
-    compileSdk = flutter.compileSdkVersion
+    // permission_handler (SMS permission) needs compileSdk 37 or newer.
+    // This only changes which APIs we compile against; targetSdk (runtime
+    // behaviour) stays at Flutter's default.
+    compileSdk = maxOf(flutter.compileSdkVersion, 37)
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

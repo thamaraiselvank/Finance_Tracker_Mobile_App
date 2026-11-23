@@ -9,6 +9,7 @@ import 'dart:convert';
 
 import '../services/errors.dart';
 import '../services/services.dart';
+import 'local_capture.dart';
 import 'local_db.dart';
 import 'local_money.dart';
 import 'py_round.dart';
@@ -30,6 +31,7 @@ Services localServices(LocalDb db) => Services(
       essentials: const _PendingEssentials(),
       imports: const _PendingImport(),
       ai: const _PendingAi(),
+      capture: LocalCaptureService(db),
     );
 
 // ---------------------------------------------------------------------------

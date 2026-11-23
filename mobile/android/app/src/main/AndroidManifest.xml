@@ -2,6 +2,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- App lock with fingerprint / face / device PIN -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Read bank / UPI SMS to record transactions automatically (offline
+         version). Only read, never sent or uploaded. Google Play requires the
+         SMS permissions declaration ("SMS-based money management") for this. -->
+    <uses-permission android:name="android.permission.READ_SMS" />
     <!-- allowBackup is off: the local database is encrypted with a key kept in
          the Android Keystore, which is not backed up, so an auto-restored copy
          could never be opened. Finverse has its own encrypted backup instead. -->

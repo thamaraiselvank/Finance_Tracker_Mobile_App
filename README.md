@@ -48,6 +48,20 @@ In this mode:
   is off, because a restored file could not be decrypted on a new phone.
 - **Already on the phone:** accounts, categories, transactions, budgets, and
   net worth from account balances.
+- **Bank SMS → review inbox (Android):** after the user allows SMS access,
+  Finverse reads SMS from banks and payment apps (letter sender IDs only;
+  personal messages are never read into the app), first for the last 180
+  days, then whenever the app is opened. Each payment waits in **More →
+  Review inbox** (also shown on Home): swipe right to add it to Money, left
+  to ignore, tap to edit; every action can be undone. Category choices are
+  remembered per merchant, and account last digits are learned, so later
+  payments arrive already filled in. The same payment seen twice (for example
+  SMS plus a payment-app message) is merged.
+  The parser is `lib/capture/sms_parser.dart`. If a real SMS isn't recognised,
+  add an anonymised copy to `test/capture/sms_parser_test.dart` and fix the
+  parser.
+  Publishing on Google Play needs the SMS permission declaration
+  ("SMS-based money management").
 - **Not moved yet** (these show "not in the offline version yet"): investments,
   goals, debts, insurance, bills & recurring, tax, calculators, financial
   health, import and AI. Each later step moves more areas to the phone, and
@@ -104,6 +118,9 @@ flutter run
 | `services/remote/` | Cloud implementations, which call the backend (default build) |
 | `local/` | Phone-only implementations: encrypted SQLite database (`local_db.dart`, `schema.dart`), Money services (`local_money.dart`), profile and placeholders (`local_services.dart`), Python-compatible rounding (`py_round.dart`) |
 | `core/app_lock.dart` | Fingerprint / PIN app lock for the phone-only version |
+| `capture/` | SMS parser, category suggestions, SMS sync (reads new SMS on app open) |
+| `local/local_capture.dart` | Review inbox: pending payments, duplicates, confirm / ignore / undo, learning |
+| `android/.../SmsReader.kt` | Native SMS inbox reader (channel `finverse/sms`) |
 | `screens/` | Auth, onboarding, Home, Money, Wealth, Goals, Debts, Insurance, AI advisor, Calculators, Profile |
 | `widgets/` | Shared UI: stat tiles, forms, empty/error states |
 

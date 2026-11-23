@@ -105,6 +105,7 @@ Json accountOut(Row r) => {
       'currency': r['currency'],
       'institution': r['institution'],
       'is_active': r['is_active'] == 1,
+      'last4': r['last4'],
       'created_at': r['created_at'],
       'updated_at': r['updated_at'],
     };
@@ -157,7 +158,7 @@ class LocalCategoriesService implements CategoriesService {
 // Transactions  (routers/transactions.py)
 // ---------------------------------------------------------------------------
 
-const _txSelect = '''
+const txSelect = '''
 SELECT t.*, c.name AS category_name, c.icon AS category_icon, c.color AS category_color,
        sc.name AS subcategory_name, a.name AS account_name
 FROM transactions t
@@ -193,7 +194,7 @@ class LocalTransactionsService implements TransactionsService {
     }
     params.add(limit ?? 100);
     return _db
-        .query('$_txSelect WHERE ${where.join(' AND ')} ORDER BY t.date DESC, t.created_at DESC LIMIT ?', params)
+        .query('$txSelect WHERE ${where.join(' AND ')} ORDER BY t.date DESC, t.created_at DESC LIMIT ?', params)
         .map(transactionOut)
         .toList();
   }
@@ -228,7 +229,7 @@ class LocalTransactionsService implements TransactionsService {
       SELECT COALESCE(SUM(CASE WHEN t.type = 'INCOME' THEN t.amount_minor ELSE 0 END), 0) AS income,
              COALESCE(SUM(CASE WHEN t.type = 'EXPENSE' THEN t.amount_minor ELSE 0 END), 0) AS expense
       FROM transactions t WHERE $_confirmed AND t.date >= ?''', [since])!;
-    final recent = _db.query('$_txSelect WHERE $_confirmed ORDER BY t.date DESC, t.created_at DESC LIMIT 10');
+    final recent = _db.query('$txSelect WHERE $_confirmed ORDER BY t.date DESC, t.created_at DESC LIMIT 10');
 
     final income = fromMinor(totals['income'] as int);
     final expense = fromMinor(totals['expense'] as int);
@@ -305,6 +306,9 @@ class LocalTransactionsService implements TransactionsService {
   }
 
   /// Deletes the transaction and reverses its effect on the account balance.
+  ///
+  /// Transactions captured automatically (SMS etc.) are hidden (IGNORED)
+  /// instead of erased, so the same message is never captured again.
   @override
   Future<void> delete(String id) async {
     _db.transaction(() {
@@ -314,31 +318,17 @@ class LocalTransactionsService implements TransactionsService {
       if (accountId != null && existing['status'] == 'CONFIRMED') {
         _applyToBalance(accountId, existing['type'] as String, -(existing['amount_minor'] as int));
       }
-      _db.execute('DELETE FROM transactions WHERE id = ?', [id]);
+      if (existing['source'] == 'MANUAL') {
+        _db.execute('DELETE FROM transactions WHERE id = ?', [id]);
+      } else {
+        _db.execute("UPDATE transactions SET status = 'IGNORED' WHERE id = ?", [id]);
+      }
     });
   }
 
-  /// Income adds to the balance, expense subtracts; transfers don't change it.
-  void _applyToBalance(String accountId, String type, int amountMinor) {
-    final delta = switch (type) { 'INCOME' => amountMinor, 'EXPENSE' => -amountMinor, _ => 0 };
-    if (delta == 0) return;
-    _db.execute('UPDATE accounts SET balance_minor = balance_minor + ?, updated_at = ? WHERE id = ?', [delta, nowTimestamp(), accountId]);
-  }
-
-  void _requireAccount(String accountId) {
-    if (_db.queryOne('SELECT id FROM accounts WHERE id = ?', [accountId]) == null) {
-      throw const NotFoundException('Account not found.');
-    }
-  }
-
-  void _checkCategory(String? categoryId, String? subcategoryId) {
-    if (categoryId != null && _db.queryOne('SELECT id FROM categories WHERE id = ?', [categoryId]) == null) {
-      throw const NotFoundException('Category not found.');
-    }
-    if (subcategoryId != null && _db.queryOne('SELECT id FROM subcategories WHERE id = ?', [subcategoryId]) == null) {
-      throw const NotFoundException('Subcategory not found.');
-    }
-  }
+  void _applyToBalance(String accountId, String type, int amountMinor) => applyToBalance(_db, accountId, type, amountMinor);
+  void _requireAccount(String accountId) => requireAccount(_db, accountId);
+  void _checkCategory(String? categoryId, String? subcategoryId) => checkCategory(_db, categoryId, subcategoryId);
 
   String? _type(Json input, {bool required = false}) {
     final raw = readString(input, 'type', required: required);
@@ -346,6 +336,29 @@ class LocalTransactionsService implements TransactionsService {
     final type = raw.toUpperCase();
     if (!transactionTypes.contains(type)) throw ValidationException('type', 'Choose income, expense or transfer');
     return type;
+  }
+}
+
+/// Income adds to the account balance, expense subtracts; transfers don't
+/// change it. Call with a negative amount to reverse.
+void applyToBalance(LocalDb db, String accountId, String type, int amountMinor) {
+  final delta = switch (type) { 'INCOME' => amountMinor, 'EXPENSE' => -amountMinor, _ => 0 };
+  if (delta == 0) return;
+  db.execute('UPDATE accounts SET balance_minor = balance_minor + ?, updated_at = ? WHERE id = ?', [delta, nowTimestamp(), accountId]);
+}
+
+void requireAccount(LocalDb db, String accountId) {
+  if (db.queryOne('SELECT id FROM accounts WHERE id = ?', [accountId]) == null) {
+    throw const NotFoundException('Account not found.');
+  }
+}
+
+void checkCategory(LocalDb db, String? categoryId, String? subcategoryId) {
+  if (categoryId != null && db.queryOne('SELECT id FROM categories WHERE id = ?', [categoryId]) == null) {
+    throw const NotFoundException('Category not found.');
+  }
+  if (subcategoryId != null && db.queryOne('SELECT id FROM subcategories WHERE id = ?', [subcategoryId]) == null) {
+    throw const NotFoundException('Subcategory not found.');
   }
 }
 
