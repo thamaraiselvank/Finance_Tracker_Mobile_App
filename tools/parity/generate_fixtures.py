@@ -190,6 +190,65 @@ def tax_fixture() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Debt payoff plans (DebtsService.payoffPlan)
+# ---------------------------------------------------------------------------
+
+DEBT_SETS: list[list[dict[str, Any]]] = [
+    [
+        {"id": "a", "debt_name": "Credit card", "current_outstanding": 85000.0, "interest_rate_pct": 36.0, "monthly_emi": 6000.0, "start_date": "2025-01-10"},
+        {"id": "b", "debt_name": "Personal loan", "current_outstanding": 300000.0, "interest_rate_pct": 14.5, "monthly_emi": 11000.0, "start_date": "2024-06-01"},
+        {"id": "c", "debt_name": "Car loan", "current_outstanding": 420000.0, "interest_rate_pct": 9.2, "monthly_emi": 12500.0, "start_date": "2023-03-15"},
+    ],
+    [
+        {"id": "h", "debt_name": "Home loan", "current_outstanding": 4500000.0, "interest_rate_pct": 8.5, "monthly_emi": 42000.0, "start_date": "2020-04-01"},
+        {"id": "e", "debt_name": "Education loan", "current_outstanding": 150000.0, "interest_rate_pct": 10.0, "monthly_emi": 5000.0, "start_date": None},
+    ],
+    [
+        # Same rate: tie broken by start date, then name.
+        {"id": "x", "debt_name": "Gold loan B", "current_outstanding": 50000.0, "interest_rate_pct": 12.0, "monthly_emi": 3000.0, "start_date": "2025-02-01"},
+        {"id": "y", "debt_name": "Gold loan A", "current_outstanding": 50000.0, "interest_rate_pct": 12.0, "monthly_emi": 3000.0, "start_date": "2025-02-01"},
+        {"id": "z", "debt_name": "Zero rate", "current_outstanding": 12000.0, "interest_rate_pct": 0.0, "monthly_emi": 1000.0, "start_date": "2024-01-01"},
+    ],
+    [
+        # EMI below the monthly interest: never paid off (capped at 600 months / stall stop).
+        {"id": "s", "debt_name": "Stuck loan", "current_outstanding": 100000.0, "interest_rate_pct": 24.0, "monthly_emi": 1500.0, "start_date": "2024-01-01"},
+        {"id": "t", "debt_name": "Small loan", "current_outstanding": 9000.0, "interest_rate_pct": 15.0, "monthly_emi": 1000.0, "start_date": "2024-01-01"},
+    ],
+    [
+        {"id": "n", "debt_name": "No EMI recorded", "current_outstanding": 20000.0, "interest_rate_pct": 18.0, "monthly_emi": None, "start_date": None},
+        {"id": "m", "debt_name": "Card", "current_outstanding": 30000.0, "interest_rate_pct": 30.0, "monthly_emi": 4000.0, "start_date": None},
+    ],
+]
+
+
+def debt_fixture() -> dict[str, Any]:
+    import datetime
+    from app.services.debt_service import calculate_avalanche_payoff, calculate_snowball_payoff
+
+    def plan_row(debt: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "debt_id": debt["id"],
+            "debt_name": debt["debt_name"],
+            "current_outstanding": debt["current_outstanding"],
+            "interest_rate_pct": debt["interest_rate_pct"],
+            "monthly_payment": debt.get("monthly_emi") or 0.0,
+            "total_interest_if_minimum": debt.get("total_interest_if_minimum", 0),
+            "months_to_payoff": debt.get("months_to_payoff", 0),
+            "payoff_date": debt.get("payoff_date"),
+        }
+
+    cases = []
+    for debts in DEBT_SETS:
+        ordered, saved, months = calculate_avalanche_payoff([dict(d) for d in debts])
+        cases.append({"strategy": "avalanche", "debts": debts, "output": _json_safe(
+            {"recommended_order": [plan_row(d) for d in ordered], "total_interest_saved": saved, "months_to_complete": months})})
+        ordered, wins, months = calculate_snowball_payoff([dict(d) for d in debts])
+        cases.append({"strategy": "snowball", "debts": debts, "output": _json_safe(
+            {"recommended_order": [plan_row(d) for d in ordered], "motivation_wins": wins, "months_to_complete": months})})
+    return {"_comment": HEADER, "service": "DebtsService.payoffPlan", "today": datetime.date.today().isoformat(), "cases": cases}
+
+
+# ---------------------------------------------------------------------------
 # Python's round() (pyRound in Dart)
 # ---------------------------------------------------------------------------
 
@@ -216,6 +275,7 @@ FIXTURES: dict[str, Callable[[], dict[str, Any]]] = {
     "calculators.json": calculators_fixture,
     "tax.json": tax_fixture,
     "py_round.json": py_round_fixture,
+    "debts.json": debt_fixture,
 }
 
 

@@ -13,7 +13,7 @@ import 'package:sqlite3/sqlite3.dart';
 ///  * Booleans are INTEGER 0/1.
 ///  * There is no users table or user_id column: the phone has one owner.
 ///    The single `profile` row replaces `users`.
-const List<String> migrations = [_v1, _v2];
+const List<String> migrations = [_v1, _v2, _v3];
 
 void migrate(Database db) {
   final current = db.select('PRAGMA user_version').first.values.first as int;
@@ -149,6 +149,79 @@ CREATE TABLE merchant_rules (
   category_id TEXT NOT NULL REFERENCES categories(id) ON DELETE CASCADE,
   subcategory_id TEXT REFERENCES subcategories(id) ON DELETE SET NULL,
   hits INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+''';
+
+/// v3: goals, debts and insurance policies (step 4b). The backend's older
+/// duplicate tables (`liabilities`, `insurances`) are not carried over: on the
+/// phone every loan is a debt and every policy an insurance policy.
+const _v3 = '''
+CREATE TABLE goals (
+  id TEXT PRIMARY KEY,
+  goal_name TEXT NOT NULL,
+  goal_type TEXT NOT NULL CHECK (goal_type IN ('RETIREMENT', 'DOWN_PAYMENT', 'DEBT_PAYOFF', 'WEALTH_BUILD', 'EDUCATION', 'VACATION', 'BUSINESS', 'EMERGENCY_FUND', 'OTHER')),
+  target_amount_minor INTEGER NOT NULL,
+  current_amount_minor INTEGER NOT NULL DEFAULT 0,
+  target_date TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 3,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'PAUSED', 'COMPLETED', 'ABANDONED')),
+  suggested_monthly_minor INTEGER NOT NULL DEFAULT 0,
+  allocated_monthly_minor INTEGER NOT NULL DEFAULT 0,
+  progress_percentage REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE goal_contributions (
+  id TEXT PRIMARY KEY,
+  goal_id TEXT NOT NULL REFERENCES goals(id) ON DELETE CASCADE,
+  amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  contributed_at TEXT NOT NULL
+);
+CREATE INDEX idx_goal_contributions_goal ON goal_contributions(goal_id, contributed_at);
+
+CREATE TABLE debts (
+  id TEXT PRIMARY KEY,
+  debt_name TEXT NOT NULL,
+  debt_type TEXT NOT NULL CHECK (debt_type IN ('CREDIT_CARD', 'PERSONAL_LOAN', 'HOME_LOAN', 'CAR_LOAN', 'EDUCATION_LOAN', 'GOLD_LOAN', 'BUSINESS_LOAN', 'OTHER')),
+  principal_minor INTEGER NOT NULL,
+  current_outstanding_minor INTEGER NOT NULL,
+  interest_rate_pct REAL NOT NULL,
+  tenure_months INTEGER,
+  monthly_emi_minor INTEGER,
+  start_date TEXT,
+  end_date TEXT,
+  creditor_name TEXT,
+  priority_payoff INTEGER NOT NULL DEFAULT 0,
+  payoff_strategy TEXT NOT NULL DEFAULT 'STANDARD' CHECK (payoff_strategy IN ('SNOWBALL', 'AVALANCHE', 'STANDARD')),
+  total_interest_paid_minor INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE insurance_policies (
+  id TEXT PRIMARY KEY,
+  policy_name TEXT NOT NULL,
+  policy_type TEXT NOT NULL CHECK (policy_type IN ('HEALTH', 'TERM_LIFE', 'MOTOR', 'HOME', 'TRAVEL', 'CRITICAL_ILLNESS', 'OTHER')),
+  sum_insured_minor INTEGER NOT NULL,
+  annual_premium_minor INTEGER NOT NULL,
+  policy_number TEXT,
+  start_date TEXT,
+  maturity_date TEXT,
+  renewal_date TEXT,
+  coverage_type TEXT,
+  dependents_covered INTEGER NOT NULL DEFAULT 0,
+  insurer_name TEXT,
+  payment_frequency TEXT NOT NULL DEFAULT 'YEARLY',
+  payment_status TEXT NOT NULL DEFAULT 'PENDING',
+  next_payment_date TEXT,
+  last_payment_date TEXT,
+  agent_name TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'EXPIRED', 'LAPSED', 'RENEWED')),
+  document_url TEXT,
+  created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 ''';

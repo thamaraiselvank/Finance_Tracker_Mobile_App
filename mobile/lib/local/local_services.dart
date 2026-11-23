@@ -15,6 +15,7 @@ import 'local_capture.dart';
 import 'local_db.dart';
 import 'local_money.dart';
 import 'local_planning.dart';
+import 'local_plans.dart';
 import 'py_round.dart';
 import 'tax_estimator.dart';
 import 'validate.dart';
@@ -33,9 +34,9 @@ Services localServices(LocalDb db, {TaxRules? taxRules}) => Services(
       transactions: LocalTransactionsService(db),
       budgets: LocalBudgetsService(db),
       assets: LocalAssetsService(db),
-      goals: const _PendingGoals(),
-      debts: const _PendingDebts(),
-      insurance: const _PendingInsurance(),
+      goals: LocalGoalsService(db),
+      debts: LocalDebtsService(db),
+      insurance: LocalInsuranceService(db),
       schedules: const _PendingSchedules(),
       tax: taxRules == null ? const _PendingTax() : LocalTaxService(db, taxRules),
       calculators: const LocalCalculatorsService(),
@@ -146,9 +147,9 @@ class LocalProfileService implements AuthService {
 // Wealth summary  (routers/assets.py get_wealth_summary)
 // ---------------------------------------------------------------------------
 
-/// Holdings, debts and loans move to the phone in a later step. Until then the
-/// summary contains only account balances (the backend's formula with no
-/// assets or debts), so net worth on Home is right for the data on the phone.
+/// Holdings move to the phone in step 4c. Until then the summary uses account
+/// balances and debts (the backend's formula with no holdings), so net worth
+/// on Home is right for the data on the phone.
 class LocalAssetsService implements AssetsService {
   LocalAssetsService(this._db);
   final LocalDb _db;
@@ -158,17 +159,20 @@ class LocalAssetsService implements AssetsService {
     final balance = fromMinor(
       _db.queryOne('SELECT COALESCE(SUM(balance_minor), 0) AS total FROM accounts WHERE is_active = 1')!['total'] as int,
     );
+    final debts = _db.queryOne(
+      'SELECT COALESCE(SUM(current_outstanding_minor), 0) AS outstanding, COALESCE(SUM(monthly_emi_minor), 0) AS emi FROM debts',
+    )!;
     const totalInvested = 0.0;
     final totalCurrent = 0.0 + balance;
     final totalPnl = totalCurrent - totalInvested;
-    const totalLiabilities = 0.0;
+    final totalLiabilities = fromMinor(debts['outstanding'] as int);
     return {
       'total_assets_invested': pyRound(totalInvested, 2),
       'total_assets_current': pyRound(totalCurrent, 2),
       'total_assets_pnl': pyRound(totalPnl, 2),
       'total_assets_pnl_pct': 0.0,
       'total_liabilities_outstanding': pyRound(totalLiabilities, 2),
-      'total_monthly_emi': 0.0,
+      'total_monthly_emi': pyRound(fromMinor(debts['emi'] as int), 2),
       'net_worth': pyRound(totalCurrent - totalLiabilities, 2),
       'asset_classes': <Json>[],
     };
@@ -190,55 +194,6 @@ class LocalAssetsService implements AssetsService {
 // ---------------------------------------------------------------------------
 // Not moved to the phone yet. Each throws a clear "coming soon" message.
 // ---------------------------------------------------------------------------
-
-class _PendingGoals implements GoalsService {
-  const _PendingGoals();
-  static const _na = NotAvailableYetException('Goals');
-  @override
-  Future<List<Json>> list() => throw _na;
-  @override
-  Future<Json> progressSummary() => throw _na;
-  @override
-  Future<void> create(Json goal) => throw _na;
-  @override
-  Future<void> update(String id, Json changes) => throw _na;
-  @override
-  Future<void> delete(String id) => throw _na;
-  @override
-  Future<void> addContribution(String goalId, double amount) => throw _na;
-}
-
-class _PendingDebts implements DebtsService {
-  const _PendingDebts();
-  static const _na = NotAvailableYetException('Debts & loans');
-  @override
-  Future<List<Json>> list() => throw _na;
-  @override
-  Future<Json> summary() => throw _na;
-  @override
-  Future<Json> payoffPlan(String strategy) => throw _na;
-  @override
-  Future<void> create(Json debt) => throw _na;
-  @override
-  Future<void> update(String id, Json changes) => throw _na;
-  @override
-  Future<void> delete(String id) => throw _na;
-}
-
-class _PendingInsurance implements InsuranceService {
-  const _PendingInsurance();
-  static const _na = NotAvailableYetException('Insurance');
-  @override
-  Future<List<Json>> list() => throw _na;
-  @override
-  Future<Json> summary() => throw _na;
-  @override
-  Future<void> create(Json policy) => throw _na;
-  @override
-  Future<void> update(String id, Json changes) => throw _na;
-  @override
-  Future<void> delete(String id) => throw _na;
-}
 
 class _PendingSchedules implements SchedulesService {
   const _PendingSchedules();
