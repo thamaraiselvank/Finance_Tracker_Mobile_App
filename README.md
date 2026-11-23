@@ -46,8 +46,11 @@ In this mode:
 - The database file is encrypted (SQLite3 Multiple Ciphers). Its random key is
   kept in the Android Keystore and never leaves the phone. Android auto-backup
   is off, because a restored file could not be decrypted on a new phone.
-- **Already on the phone:** accounts, categories, transactions, budgets, and
-  net worth from account balances.
+- **Already on the phone:** accounts, categories, transactions, budgets,
+  Wealth holdings and net worth (stock prices refresh from Yahoo Finance's
+  public quotes; only ticker symbols are sent), goals, debts and payoff plans,
+  insurance, Bills & recurring, all calculators, the income-tax estimate,
+  Financial health and the Financial check-up (rule-based, no AI).
 - **Bank SMS → review inbox (Android):** after the user allows SMS access,
   Finverse reads SMS from banks and payment apps (letter sender IDs only;
   personal messages are never read into the app), first for the last 180
@@ -76,10 +79,14 @@ In this mode:
   the name after "Paid to" / "Received from", the UPI reference, the bank and
   account digits, the note and the receipt's own date and time. The payment
   then waits in the review inbox like the others.
-- **Not moved yet** (these show "not in the offline version yet"): investments,
-  goals, debts, insurance, bills & recurring, tax, calculators, financial
-  health, import and AI. Each later step moves more areas to the phone, and
-  local data is never mixed with server data.
+- **Not moved yet** (these show "not in the offline version yet"): statement
+  import and the AI chat. Local data is never mixed with server data.
+- Every ported calculation is checked against the Python backend with
+  fixtures from `tools/parity/generate_fixtures.py` (calculators, tax, debt
+  payoff plans, Bills & recurring calendar, Wealth summary, Financial health,
+  Financial check-up, rounding). One intentional difference: the Debts
+  screen's average interest rate is a plain average (the backend halved it by
+  averaging with an empty liabilities table).
 
 The default build (without `FINVERSE_MODE`) is unchanged and still uses the
 live backend with sign-in.

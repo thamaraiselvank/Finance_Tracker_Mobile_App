@@ -356,6 +356,136 @@ def wealth_fixture() -> dict[str, Any]:
             "debts": debts, "output": output}
 
 
+def health_fixture() -> dict[str, Any]:
+    """Financial health check (EssentialsService.healthCheck) for sample data sets."""
+    from app.services import health_engine
+    from app.schemas.insurance import EssentialsCheckSummary
+
+    base_user = {"monthly_income": 0.0, "monthly_expense": 0.0, "emergency_fund_amount": 0.0, "target_savings_rate": 30.0,
+                 "dependents_count": 0, "health_dependents": []}
+    scenarios = [
+        {"name": "no data", "user": {}, "tx": {"total_income": 0, "total_expense": 0, "active_months": 0},
+         "assets": [], "accounts": [], "debts": [], "policies": []},
+        {"name": "typical salaried", "user": {"monthly_income": 100000.0, "monthly_expense": 60000.0},
+         "tx": {"total_income": 300000.0, "total_expense": 171234.5, "active_months": 3},
+         "assets": [{"current_value": 250000.0, "asset_class": "FIXED_INCOME", "sub_type": None, "name": "FD"},
+                    {"current_value": 400000.0, "asset_class": "EQUITY", "sub_type": None, "name": "Stocks"},
+                    {"current_value": 80000.0, "asset_class": "MUTUAL_FUND", "sub_type": "Liquid fund", "name": "Liquid"}],
+         "accounts": [{"balance": 120000.0}], "debts": [{"current_outstanding": 350000.0}],
+         "policies": [{"policy_type": "TERM_LIFE", "status": "ACTIVE", "sum_insured": 10000000.0},
+                      {"policy_type": "HEALTH", "status": "ACTIVE", "sum_insured": 500000.0},
+                      {"policy_type": "HEALTH", "status": "LAPSED", "sum_insured": 900000.0}]},
+        {"name": "family with emergency fund", "user": {"monthly_income": 150000.0, "monthly_expense": 90000.0,
+         "emergency_fund_amount": 600000.0, "dependents_count": 3, "target_savings_rate": 35.0,
+         "health_dependents": [{"name": "Spouse", "cover": 500000}, {"name": "Parent", "cover": 1000000}]},
+         "tx": {"total_income": 0, "total_expense": 0, "active_months": 0},
+         "assets": [{"current_value": 2000000.0, "asset_class": "REAL_ESTATE", "sub_type": None, "name": "Plot"}],
+         "accounts": [{"balance": 50000.0}], "debts": [{"current_outstanding": 1800000.0}],
+         "policies": [{"policy_type": "TERM_LIFE", "status": "ACTIVE", "sum_insured": 20000000.0},
+                      {"policy_type": "CRITICAL_ILLNESS", "status": "RENEWED", "sum_insured": 1200000.0}]},
+        {"name": "only debts", "user": {"monthly_expense": 40000.0}, "tx": {"total_income": 0, "total_expense": 0, "active_months": 0},
+         "assets": [], "accounts": [], "debts": [{"current_outstanding": 75000.0}], "policies": []},
+        {"name": "high saver", "user": {"monthly_income": 300000.0, "monthly_expense": 10000.0},
+         "tx": {"total_income": 0, "total_expense": 0, "active_months": 0},
+         "assets": [{"current_value": 5000000.0, "asset_class": "EQUITY", "sub_type": None, "name": "Savings portfolio"}],
+         "accounts": [], "debts": [], "policies": []},
+        {"name": "overspending", "user": {"monthly_income": 50000.0}, "tx": {"total_income": 100000.0, "total_expense": 130000.0, "active_months": 2},
+         "assets": [], "accounts": [{"balance": 15000.0}], "debts": [], "policies": [{"policy_type": "HEALTH", "status": "ACTIVE", "sum_insured": 300000.0}]},
+    ]
+
+    cases = []
+    for s in scenarios:
+        user = {**base_user, **s["user"]}
+        tx = s["tx"]
+
+        def fake_fetch_one(query: str, params: tuple, user=user, tx=tx):
+            return user if "FROM users" in query else tx
+
+        def fake_fetch_all(query: str, params: tuple, s=s):
+            if "FROM assets" in query:
+                return s["assets"]
+            if "FROM accounts" in query:
+                return s["accounts"]
+            if "FROM debts" in query:
+                return s["debts"]
+            if "FROM insurance_policies" in query:
+                return s["policies"]
+            return []
+
+        original = (health_engine.fetch_one, health_engine.fetch_all)
+        health_engine.fetch_one, health_engine.fetch_all = fake_fetch_one, fake_fetch_all
+        try:
+            output = EssentialsCheckSummary.model_validate(health_engine.compute_user_financial_health("u")).model_dump(mode="json")
+        finally:
+            health_engine.fetch_one, health_engine.fetch_all = original
+        cases.append({**s, "user": user, "output": output})
+    return {"_comment": HEADER, "service": "EssentialsService.healthCheck", "cases": cases}
+
+
+def assessment_fixture() -> dict[str, Any]:
+    """Financial check-up score and rule-based recommendations (no AI)."""
+    import types as _types
+
+    # The module imports the Gemini SDK for its AI path; the scoring used here
+    # doesn't need it, so empty stand-ins are enough when it isn't installed.
+    if "google.genai" not in sys.modules:
+        try:
+            import google.genai  # noqa: F401
+        except ImportError:
+            google = sys.modules.setdefault("google", _types.ModuleType("google"))
+            genai = _types.ModuleType("google.genai")
+            genai.types = _types.ModuleType("google.genai.types")
+            google.genai = genai
+            sys.modules["google.genai"] = genai
+            sys.modules["google.genai.types"] = genai.types
+
+    from app.schemas.financial_assessment import FinancialAssessmentAnswers
+    from app.services.financial_assessment import _fallback_recommendations, score_financial_assessment
+
+    base = {
+        "income_sources": ["salary"], "monthly_net_income": 80000, "income_stability": "regular",
+        "essential_monthly_spending": 45000, "month_end_pattern": "save_regularly", "liquid_savings": 300000,
+        "debt_status": "no", "upcoming_large_expense": "no", "unexpected_expense_plan": "savings",
+        "health_cover": "both", "has_dependents": False, "term_cover": "not_applicable", "planning_confidence": "confident",
+        "investment_types": ["mutual_funds", "stocks", "retirement"], "gold_share": "none", "market_reaction": "wait",
+        "goal_priority": "retirement", "goal_horizon": "over_10_years",
+    }
+    variants = [
+        {},
+        {"monthly_net_income": 40000, "income_stability": "variable", "essential_monthly_spending": 38000, "month_end_pattern": "withdraw_or_borrow",
+         "liquid_savings": 20000, "debt_status": "yes", "debt_outstanding": 600000, "monthly_debt_payment": 16000,
+         "debt_payment_pattern": "sometimes_late", "upcoming_large_expense": None, "unexpected_expense_plan": None,
+         "health_cover": "none", "has_dependents": True, "term_cover": "none", "planning_confidence": "need_help",
+         "investment_types": [], "goal_horizon": "not_sure"},
+        {"debt_status": "not_sure", "upcoming_large_expense": None, "unexpected_expense_plan": None, "health_cover": "not_sure",
+         "income_stability": "variable", "has_dependents": True, "term_cover": "not_sure", "gold_share": "not_sure",
+         "market_reaction": "not_sure", "goal_horizon": "not_sure", "planning_confidence": "not_sure"},
+        {"monthly_net_income": 0, "liquid_savings": 0, "month_end_pattern": "break_even", "income_stability": "seasonal",
+         "unexpected_expense_plan": "borrow", "upcoming_large_expense": "yes", "health_cover": "employer"},
+        {"investment_types": ["gold", "gold", "cash_deposit"], "gold_share": "over_50", "monthly_net_income": 45000,
+         "essential_monthly_spending": 45000, "liquid_savings": 150000, "unexpected_expense_plan": "monthly_cashflow"},
+        {"investment_types": ["gold", "stocks", "mutual_funds", "property", "retirement"], "gold_share": "26_to_50",
+         "monthly_net_income": 200000, "essential_monthly_spending": 60000, "liquid_savings": 450000,
+         "debt_status": "yes", "debt_outstanding": 2000000, "monthly_debt_payment": 25000, "debt_payment_pattern": "on_time",
+         "upcoming_large_expense": None, "unexpected_expense_plan": None, "has_dependents": True, "term_cover": "adequate"},
+        # Invalid combinations (messages must match).
+        {"debt_status": "yes", "upcoming_large_expense": None, "unexpected_expense_plan": None},
+        {"has_dependents": True, "term_cover": "not_applicable"},
+        {"gold_share": "over_50"},
+        {"essential_monthly_spending": 0},
+    ]
+    cases = []
+    for v in variants:
+        answers = {**base, **v}
+
+        def compute(model):
+            return {**score_financial_assessment(model),
+                    "recommendations": [r.model_dump() for r in _fallback_recommendations(model).recommendations]}
+
+        cases.append(_run_case(answers, FinancialAssessmentAnswers, compute))
+    return {"_comment": HEADER, "service": "AiService.financialAssessment (offline scoring)", "cases": cases}
+
+
 # ---------------------------------------------------------------------------
 # Python's round() (pyRound in Dart)
 # ---------------------------------------------------------------------------
@@ -386,6 +516,8 @@ FIXTURES: dict[str, Callable[[], dict[str, Any]]] = {
     "debts.json": debt_fixture,
     "schedules.json": schedules_fixture,
     "wealth.json": wealth_fixture,
+    "health.json": health_fixture,
+    "assessment.json": assessment_fixture,
 }
 
 

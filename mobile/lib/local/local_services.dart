@@ -11,6 +11,8 @@ import 'package:flutter/services.dart';
 
 import '../services/errors.dart';
 import '../services/services.dart';
+import 'assessment.dart';
+import 'health_engine.dart';
 import 'local_capture.dart';
 import 'local_db.dart';
 import 'local_money.dart';
@@ -43,7 +45,7 @@ Services localServices(LocalDb db, {TaxRules? taxRules}) => Services(
       schedules: LocalSchedulesService(db),
       tax: taxRules == null ? const _PendingTax() : LocalTaxService(db, taxRules),
       calculators: const LocalCalculatorsService(),
-      essentials: const _PendingEssentials(),
+      essentials: LocalEssentialsService(db),
       imports: const _PendingImport(),
       ai: const _PendingAi(),
       capture: LocalCaptureService(db),
@@ -161,12 +163,6 @@ class _PendingTax implements TaxService {
   Future<Json> estimate(Json input) => throw _na;
 }
 
-class _PendingEssentials implements EssentialsService {
-  const _PendingEssentials();
-  @override
-  Future<Json> healthCheck() => throw const NotAvailableYetException('Financial health');
-}
-
 class _PendingImport implements ImportService {
   const _PendingImport();
   static const _na = NotAvailableYetException('Import');
@@ -194,6 +190,9 @@ class _PendingAi implements AiService {
   Future<Json> quota() => throw _na;
   @override
   Future<Json> chat(String question, {String? conversationId}) => throw _na;
+
+  /// The check-up's score and next steps are rule-based, so they work fully
+  /// on the phone (AI-written wording can be added with the AI step).
   @override
-  Future<Json> financialAssessment(Json answers) => throw _na;
+  Future<Json> financialAssessment(Json answers) async => offlineAssessment(answers);
 }
