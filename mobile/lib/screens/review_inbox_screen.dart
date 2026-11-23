@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart' show HapticFeedback;
 import 'package:intl/intl.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
@@ -9,12 +10,14 @@ import '../core/format.dart';
 import '../core/theme.dart';
 import '../services/services.dart';
 import '../widgets/common.dart';
+import 'capture_rules_screen.dart';
 
-/// Payments captured from bank SMS, waiting for a quick yes / no.
+/// Payments captured from bank SMS, payment-app notifications and shared
+/// screenshots, waiting for a quick yes / no.
 ///
-/// Swipe right = confirm (counts in Money from then on), swipe left = ignore,
-/// tap = edit. Category and account chips can be changed before confirming;
-/// the app remembers the choice for the next payment to the same merchant.
+/// Swipe right = add to Money, swipe left = ignore, tap = edit. Tapping the
+/// category opens "What is this payment?", which can also teach Finverse to
+/// treat every payment like it the same way.
 class ReviewInboxScreen extends StatefulWidget {
   const ReviewInboxScreen({super.key});
 
@@ -29,6 +32,12 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
   String? _error;
   bool _confirmingAll = false;
   SmsSync? _sync;
+
+  /// Reviewed since the screen opened, for the progress bar.
+  int _reviewed = 0;
+
+  /// Cards dragged past the point where letting go adds / ignores them.
+  final _armed = <String>{};
 
   CaptureService get _capture => context.services.capture!;
 
@@ -73,33 +82,49 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     }
   }
 
+  void _snack(String message, {String? undoId}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(message),
+        action: undoId == null ? null : SnackBarAction(label: 'Undo', onPressed: () => _undo(undoId)),
+      ));
+  }
+
+  Future<void> _undo(String id) async {
+    try {
+      await _capture.reopen(id);
+      if (_reviewed > 0) _reviewed--;
+    } catch (e) {
+      if (mounted) context.showSnack(e.toString(), error: true);
+    }
+    await _load();
+  }
+
   Future<void> _run(Future<void> Function() action, {String? done, String? undoId}) async {
     try {
       await action();
       await _load();
-      if (!mounted || done == null) return;
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          content: Text(done),
-          action: undoId == null
-              ? null
-              : SnackBarAction(label: 'Undo', onPressed: () => _run(() => _capture.reopen(undoId))),
-        ));
+      if (done != null) _snack(done, undoId: undoId);
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
       await _load();
     }
   }
 
-  /// "Add" button: asks for the account first if the SMS didn't identify one.
+  /// "Add" button: asks for the account first if the message didn't identify one.
   Future<void> _confirm(Json item) async {
     if (item['account_id'] == null && await _pickAccount(item) == null) return;
+    HapticFeedback.lightImpact();
+    _reviewed++;
     await _run(() => _capture.confirm(item['id'] as String), done: 'Added to Money', undoId: item['id'] as String);
   }
 
-  Future<void> _ignore(Json item) =>
-      _run(() => _capture.ignore(item['id'] as String), done: 'Ignored', undoId: item['id'] as String);
+  Future<void> _ignore(Json item) {
+    _reviewed++;
+    return _run(() => _capture.ignore(item['id'] as String), done: 'Ignored · not counted', undoId: item['id'] as String);
+  }
 
   /// Swipe: only changes the database; the list reloads after the card has
   /// slid away (in onDismissed), so the animation is never interrupted.
@@ -114,16 +139,29 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
         return false;
       }
       await _capture.confirm(item['id'] as String);
+      HapticFeedback.lightImpact();
       return true;
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
       return false;
+    } finally {
+      _armed.remove(item['id']);
     }
   }
 
   void _afterSwipe(Json item, DismissDirection direction) {
-    setState(() => _items?.removeWhere((i) => i['id'] == item['id']));
-    _run(() async {}, done: direction == DismissDirection.startToEnd ? 'Added to Money' : 'Ignored', undoId: item['id'] as String);
+    setState(() {
+      _items?.removeWhere((i) => i['id'] == item['id']);
+      _reviewed++;
+    });
+    _snack(direction == DismissDirection.startToEnd ? 'Added to Money' : 'Ignored · not counted', undoId: item['id'] as String);
+    _load();
+  }
+
+  void _onSwipeUpdate(Json item, DismissUpdateDetails d) {
+    if (d.reached == d.previousReached) return;
+    if (d.reached) HapticFeedback.selectionClick();
+    setState(() => d.reached ? _armed.add(item['id'] as String) : _armed.remove(item['id']));
   }
 
   Future<void> _confirmAllReady() async {
@@ -139,7 +177,10 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
       }
     }
     if (!mounted) return;
-    setState(() => _confirmingAll = false);
+    setState(() {
+      _confirmingAll = false;
+      _reviewed += ready.length - failed;
+    });
     await _load();
     if (mounted) context.showSnack(failed == 0 ? 'Added ${ready.length} to Money' : 'Added ${ready.length - failed}; $failed need attention');
   }
@@ -193,40 +234,19 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     }
   }
 
-  Future<void> _pickCategory(Json item) async {
-    final type = item['type'];
-    final options = _categories.where((c) => c['type'] == type).toList();
-    final choice = await showModalBottomSheet<String>(
-      context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
-      builder: (ctx) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.6,
-        builder: (ctx, controller) => ListView(controller: controller, children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Text(
-              item['merchant'] != null ? 'Category for ${item['merchant']}' : 'Category',
-              style: Theme.of(ctx).textTheme.titleMedium,
-            ),
-          ),
-          if (item['merchant'] != null)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-              child: Text('Finverse will remember this for ${item['merchant']}.', style: Theme.of(ctx).textTheme.bodySmall),
-            ),
-          for (final c in options)
-            ListTile(
-              title: Text(c['name'].toString()),
-              trailing: c['id'] == item['category_id'] ? const Icon(Icons.check) : null,
-              onTap: () => Navigator.pop(ctx, c['id'] as String),
-            ),
-        ]),
-      ),
-    );
-    if (choice == null) return;
-    await _run(() => _capture.updatePending(item['id'] as String, {'category_id': choice}));
+  /// "What is this payment?" (kind, category, and payments like it).
+  Future<void> _teach(Json item) async {
+    final result = await showTeachSheet(context, item: item, categories: _categories);
+    if (result == null || !mounted) return;
+    await _load();
+    final stillPending = _items?.any((i) => i['id'] == item['id']) ?? false;
+    final updated = (result['pending_updated'] as int) + (result['past_updated'] as int);
+    if (!stillPending) {
+      _reviewed++;
+      _snack(updated > 0 ? 'Ignored, with $updated like it' : 'Ignored · not counted', undoId: item['id'] as String);
+    } else {
+      _snack(updated > 0 ? 'Saved · $updated more payment${updated == 1 ? '' : 's'} like it updated' : 'Saved');
+    }
   }
 
   Future<void> _edit(Json item) async {
@@ -234,12 +254,15 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     if (changed == true) await _load();
   }
 
+  void _openRules() => Navigator.push(context, MaterialPageRoute(builder: (_) => const CaptureRulesScreen())).then((_) => _load());
+
   @override
   Widget build(BuildContext context) {
     final sync = context.watch<SmsSync?>();
     final notifications = context.watch<NotificationSync?>();
     final items = _items;
     final readyCount = (items ?? []).where((i) => i['account_id'] != null).length;
+    final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
         title: const Text('Review inbox'),
@@ -252,6 +275,7 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
                   ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
                   : const Icon(Icons.done_all),
             ),
+          IconButton(tooltip: 'Auto-categorise rules', onPressed: _openRules, icon: const Icon(Icons.auto_awesome_outlined)),
         ],
       ),
       body: RefreshIndicator(
@@ -268,33 +292,59 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
           else if (items == null)
             const Padding(padding: EdgeInsets.all(40), child: Center(child: CircularProgressIndicator()))
           else if (items.isEmpty)
-            const EmptyState(
-              icon: Icons.inbox_outlined,
-              title: 'All caught up',
-              message: 'New bank and UPI payments appear here automatically. Swipe right to add one to Money, left to ignore it.\n\n'
-                  'Missing one? Share the payment screenshot to Finverse from your gallery or payment app.',
-            )
+            _CaughtUp(celebrate: _reviewed > 0, reviewed: _reviewed)
           else ...[
-            Padding(
-              padding: const EdgeInsets.only(top: 8, bottom: 8),
-              child: Text(
-                '${items.length} to review · swipe right to add, left to ignore',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Theme.of(context).colorScheme.outline),
+            const SizedBox(height: 8),
+            if (_reviewed > 0) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween(end: _reviewed / (_reviewed + items.length)),
+                  duration: const Duration(milliseconds: 400),
+                  curve: Curves.easeOut,
+                  builder: (_, v, _) => LinearProgressIndicator(value: v, minHeight: 6, color: AppColors.income),
+                ),
               ),
-            ),
+              const SizedBox(height: 6),
+            ],
+            Row(children: [
+              Expanded(
+                child: Text(
+                  _reviewed > 0 ? '$_reviewed done · ${items.length} left' : '${items.length} to review',
+                  style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                ),
+              ),
+              const Icon(Icons.swipe_right_alt, size: 18, color: AppColors.income),
+              Text(' add  ', style: theme.textTheme.bodySmall),
+              Icon(Icons.swipe_left_alt, size: 18, color: theme.colorScheme.outline),
+              Text(' ignore', style: theme.textTheme.bodySmall),
+            ]),
+            const SizedBox(height: 8),
             for (final item in items)
               Dismissible(
                 key: ValueKey(item['id']),
-                background: _swipeBackground(context, Icons.check, 'Add', AppColors.income, Alignment.centerLeft),
-                secondaryBackground: _swipeBackground(context, Icons.close, 'Ignore', Theme.of(context).colorScheme.outline, Alignment.centerRight),
+                background: _SwipeBackground(
+                  icon: Icons.check_circle,
+                  label: item['account_id'] == null ? 'Choose account' : 'Add to Money',
+                  color: AppColors.income,
+                  alignment: Alignment.centerLeft,
+                  armed: _armed.contains(item['id']),
+                ),
+                secondaryBackground: _SwipeBackground(
+                  icon: Icons.do_not_disturb_on,
+                  label: 'Ignore',
+                  color: AppColors.expense,
+                  alignment: Alignment.centerRight,
+                  armed: _armed.contains(item['id']),
+                ),
+                dismissThresholds: const {DismissDirection.startToEnd: 0.35, DismissDirection.endToStart: 0.35},
+                onUpdate: (d) => _onSwipeUpdate(item, d),
                 confirmDismiss: (direction) => _swiped(item, direction),
                 onDismissed: (direction) => _afterSwipe(item, direction),
                 child: _PendingCard(
                   item: item,
-                  categoryName: _categoryName(item),
-                  accountName: _accountName(item),
                   onTap: () => _edit(item),
-                  onCategory: () => _pickCategory(item),
+                  onCategory: () => _teach(item),
                   onAccount: () => _pickAccount(item),
                   onConfirm: () => _confirm(item),
                   onIgnore: () => _ignore(item),
@@ -305,34 +355,99 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
       ),
     );
   }
-
-  String? _categoryName(Json item) {
-    final name = item['category_name'] as String?;
-    final sub = item['subcategory_name'] as String?;
-    if (name == null) return null;
-    return sub == null ? name : '$name · $sub';
-  }
-
-  String? _accountName(Json item) => item['account_name'] as String?;
-
-  Widget _swipeBackground(BuildContext context, IconData icon, String label, Color color, Alignment alignment) => Container(
-        margin: const EdgeInsets.only(bottom: 10),
-        padding: const EdgeInsets.symmetric(horizontal: 24),
-        alignment: alignment,
-        decoration: BoxDecoration(color: color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(16)),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 8),
-          Text(label, style: TextStyle(color: color, fontWeight: FontWeight.w700)),
-        ]),
-      );
 }
+
+class _SwipeBackground extends StatelessWidget {
+  const _SwipeBackground({required this.icon, required this.label, required this.color, required this.alignment, required this.armed});
+  final IconData icon;
+  final String label;
+  final Color color;
+  final Alignment alignment;
+
+  /// Past the threshold: letting go will act. Shown stronger.
+  final bool armed;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = armed ? Colors.white : color;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      alignment: alignment,
+      decoration: BoxDecoration(color: armed ? color : color.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(16)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        AnimatedScale(scale: armed ? 1.25 : 1, duration: const Duration(milliseconds: 180), curve: Curves.easeOutBack, child: Icon(icon, color: fg)),
+        const SizedBox(width: 8),
+        Text(label, style: TextStyle(color: fg, fontWeight: FontWeight.w700)),
+      ]),
+    );
+  }
+}
+
+/// "All caught up", with a small celebration after reviewing.
+class _CaughtUp extends StatelessWidget {
+  const _CaughtUp({required this.celebrate, required this.reviewed});
+  final bool celebrate;
+  final int reviewed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 8),
+      child: Column(children: [
+        TweenAnimationBuilder<double>(
+          tween: Tween(begin: celebrate ? 0 : 1, end: 1),
+          duration: const Duration(milliseconds: 700),
+          curve: Curves.elasticOut,
+          builder: (_, v, child) => Transform.scale(scale: v, child: child),
+          child: CircleAvatar(
+            radius: 36,
+            backgroundColor: AppColors.income.withValues(alpha: 0.14),
+            child: const Icon(Icons.done_all, size: 36, color: AppColors.income),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text('All caught up', style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
+        const SizedBox(height: 8),
+        Text(
+          celebrate
+              ? 'You reviewed $reviewed payment${reviewed == 1 ? '' : 's'}. New bank and UPI payments will appear here.'
+              : 'New bank and UPI payments appear here automatically. Swipe right to add one to Money, left to ignore it.\n\n'
+                  'Missing one? Share the payment screenshot to Finverse from your gallery or payment app.',
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
+        ),
+      ]),
+    );
+  }
+}
+
+/// Where a payment was seen: "SMS · HDFC Bank", "Google Pay notification",
+/// "Screenshot".
+(IconData, String) _sourceBadge(Json seen) {
+  final label = seen['label'] as String?;
+  return switch (seen['source']) {
+    'SMS' => (Icons.sms_outlined, label == null ? 'SMS' : 'SMS · $label'),
+    'UPI_NOTIFICATION' => (Icons.notifications_outlined, label == null ? 'App notification' : '$label notification'),
+    'SHARE' => (Icons.image_outlined, 'Screenshot'),
+    _ => (Icons.edit_note, 'Added by hand'),
+  };
+}
+
+/// Why the category was chosen.
+(IconData, String, Color?)? _reason(Json item, ThemeData theme) => switch (item['suggest_source']) {
+      'RULE' => (Icons.auto_awesome, 'Learned from your choice', AppColors.income),
+      'BUILTIN' => (Icons.rule, item['suggest_label'] as String? ?? 'Built-in rule', AppColors.info),
+      'GUESS' => (Icons.help_outline, 'Guess · please check', AppColors.warning),
+      'USER' => (Icons.check, 'Your choice', theme.colorScheme.outline),
+      _ => null,
+    };
 
 class _PendingCard extends StatelessWidget {
   const _PendingCard({
     required this.item,
-    required this.categoryName,
-    required this.accountName,
     required this.onTap,
     required this.onCategory,
     required this.onAccount,
@@ -341,78 +456,98 @@ class _PendingCard extends StatelessWidget {
   });
 
   final Json item;
-  final String? categoryName;
-  final String? accountName;
   final VoidCallback onTap, onCategory, onAccount, onConfirm, onIgnore;
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final theme = Theme.of(context);
-    final income = item['type'] == 'INCOME';
+    final into = (item['direction'] ?? (item['type'] == 'INCOME' ? 'IN' : 'OUT')) == 'IN';
+    final transfer = item['type'] == 'TRANSFER';
+    final color = transfer ? AppColors.info : (into ? AppColors.income : AppColors.expense);
     final at = DateTime.tryParse(item['occurred_at']?.toString() ?? '')?.toLocal();
     final where = [
-      if (item['bank'] != null) item['bank'],
       if (item['account_last4'] != null) '••${item['account_last4']}',
       if (at != null) DateFormat('d MMM, h:mm a').format(at),
     ].join(' · ');
+    final category = item['category_name'] as String?;
+    final sub = item['subcategory_name'] as String?;
+    final categoryText = category == null ? null : (sub == null ? category : '$category · $sub');
+    final seen = ((item['seen_via'] as List?) ?? const []).cast<Json>();
+    final reason = categoryText == null && item['suggest_source'] != 'USER' ? null : _reason(item, theme);
+
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
+      clipBehavior: Clip.antiAlias,
       child: InkWell(
-        borderRadius: BorderRadius.circular(16),
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: (income ? AppColors.income : AppColors.expense).withValues(alpha: 0.12),
-                child: Icon(income ? Icons.south_west : Icons.north_east, size: 18, color: income ? AppColors.income : AppColors.expense),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
+        child: IntrinsicHeight(
+          child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Container(width: 5, color: color),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 8, 6),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(item['description'].toString(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
-                  if (where.isNotEmpty)
-                    Text(where, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+                  Row(children: [
+                    CircleAvatar(
+                      radius: 18,
+                      backgroundColor: color.withValues(alpha: 0.12),
+                      child: Icon(transfer ? Icons.swap_horiz : (into ? Icons.south_west : Icons.north_east), size: 18, color: color),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(item['description'].toString(), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w700)),
+                        if (where.isNotEmpty) Text(where, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
+                      ]),
+                    ),
+                    Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                      Text(
+                        '${into ? '+' : '−'}${state.money.format(item['amount'], hidden: state.hideAmounts)}',
+                        style: TextStyle(fontWeight: FontWeight.w800, color: into || transfer ? color : null),
+                      ),
+                      if (transfer) Text('own money', style: theme.textTheme.labelSmall?.copyWith(color: color)),
+                    ]),
+                    const SizedBox(width: 4),
+                  ]),
+                  const SizedBox(height: 8),
+                  Wrap(spacing: 6, runSpacing: 4, children: [
+                    for (final s in seen)
+                      _Badge(icon: _sourceBadge(s).$1, label: _sourceBadge(s).$2, color: theme.colorScheme.onSurfaceVariant),
+                    if (reason != null) _Badge(icon: reason.$1, label: reason.$2, color: reason.$3 ?? theme.colorScheme.outline),
+                  ]),
+                  const SizedBox(height: 6),
+                  Wrap(spacing: 8, runSpacing: 4, children: [
+                    ActionChip(
+                      avatar: Icon(categoryText == null ? Icons.label_outline : Icons.label, size: 16),
+                      label: Text(categoryText ?? (transfer ? 'Own money' : 'Add category')),
+                      onPressed: onCategory,
+                    ),
+                    ActionChip(
+                      avatar: Icon(Icons.account_balance_outlined, size: 16, color: item['account_name'] == null ? AppColors.warning : null),
+                      label: Text(item['account_name'] as String? ?? 'Choose account'),
+                      onPressed: onAccount,
+                    ),
+                  ]),
+                  Row(children: [
+                    TextButton(
+                      onPressed: () => showDialog<void>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          title: const Text('Original message'),
+                          content: SelectableText(item['raw_text']?.toString() ?? ''),
+                          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
+                        ),
+                      ),
+                      child: const Text('Message'),
+                    ),
+                    const Spacer(),
+                    TextButton(onPressed: onIgnore, child: const Text('Ignore')),
+                    FilledButton.tonal(onPressed: onConfirm, child: const Text('Add')),
+                  ]),
                 ]),
               ),
-              Text(
-                '${income ? '+' : '−'}${state.money.format(item['amount'], hidden: state.hideAmounts)}',
-                style: TextStyle(fontWeight: FontWeight.w800, color: income ? AppColors.income : null),
-              ),
-              const SizedBox(width: 8),
-            ]),
-            const SizedBox(height: 8),
-            Wrap(spacing: 8, runSpacing: 4, children: [
-              ActionChip(
-                avatar: Icon(categoryName == null ? Icons.label_outline : Icons.label, size: 16),
-                label: Text(categoryName ?? 'Add category'),
-                onPressed: onCategory,
-              ),
-              ActionChip(
-                avatar: Icon(Icons.account_balance_outlined, size: 16, color: accountName == null ? AppColors.warning : null),
-                label: Text(accountName ?? 'Choose account'),
-                onPressed: onAccount,
-              ),
-            ]),
-            Row(children: [
-              TextButton(
-                onPressed: () => showDialog<void>(
-                  context: context,
-                  builder: (ctx) => AlertDialog(
-                    title: const Text('Original message'),
-                    content: SelectableText(item['raw_text']?.toString() ?? ''),
-                    actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close'))],
-                  ),
-                ),
-                child: const Text('View SMS'),
-              ),
-              const Spacer(),
-              TextButton(onPressed: onIgnore, child: const Text('Ignore')),
-              FilledButton.tonal(onPressed: onConfirm, child: const Text('Add')),
-            ]),
+            ),
           ]),
         ),
       ),
@@ -420,7 +555,25 @@ class _PendingCard extends StatelessWidget {
   }
 }
 
-/// Edit a captured payment before adding it (amount, type, description, date).
+class _Badge extends StatelessWidget {
+  const _Badge({required this.icon, required this.label, required this.color});
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(color: color.withValues(alpha: 0.10), borderRadius: BorderRadius.circular(20)),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 13, color: color),
+          const SizedBox(width: 4),
+          Text(label, style: Theme.of(context).textTheme.labelSmall?.copyWith(color: color, fontWeight: FontWeight.w600)),
+        ]),
+      );
+}
+
+/// Edit a captured payment before adding it (amount, direction, description, date).
 class _PendingEditForm extends StatefulWidget {
   const _PendingEditForm({required this.item});
   final Json item;
@@ -432,7 +585,7 @@ class _PendingEditForm extends StatefulWidget {
 class _PendingEditFormState extends State<_PendingEditForm> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _description, _amount;
-  late String _type;
+  late String _direction;
   late DateTime _date;
   bool _busy = false;
 
@@ -441,7 +594,7 @@ class _PendingEditFormState extends State<_PendingEditForm> {
     super.initState();
     _description = TextEditingController(text: widget.item['description']?.toString() ?? '');
     _amount = TextEditingController(text: toDouble(widget.item['amount']).toStringAsFixed(2));
-    _type = widget.item['type']?.toString() ?? 'EXPENSE';
+    _direction = widget.item['direction'] as String? ?? (widget.item['type'] == 'INCOME' ? 'IN' : 'OUT');
     _date = toDate(widget.item['date']) ?? DateTime.now();
   }
 
@@ -452,18 +605,22 @@ class _PendingEditFormState extends State<_PendingEditForm> {
     super.dispose();
   }
 
-  Future<void> _save() => runSave(
-        context,
-        formKey: _formKey,
-        setBusy: (b) => setState(() => _busy = b),
-        successMessage: 'Saved',
-        action: () => context.services.capture!.updatePending(widget.item['id'] as String, {
-          'type': _type,
-          'amount': parseAmount(_amount),
-          'description': _description.text.trim(),
-          'date': apiDate(_date),
-        }),
-      );
+  Future<void> _save() {
+    final type = widget.item['type'] == 'TRANSFER' ? 'TRANSFER' : (_direction == 'IN' ? 'INCOME' : 'EXPENSE');
+    return runSave(
+      context,
+      formKey: _formKey,
+      setBusy: (b) => setState(() => _busy = b),
+      successMessage: 'Saved',
+      action: () => context.services.capture!.updatePending(widget.item['id'] as String, {
+        'direction': _direction,
+        if (type != widget.item['type']) 'type': type,
+        'amount': parseAmount(_amount),
+        'description': _description.text.trim(),
+        'date': apiDate(_date),
+      }),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -475,11 +632,11 @@ class _PendingEditFormState extends State<_PendingEditForm> {
           padding: const EdgeInsets.only(bottom: 16),
           child: SegmentedButton<String>(
             segments: const [
-              ButtonSegment(value: 'EXPENSE', label: Text('Money out')),
-              ButtonSegment(value: 'INCOME', label: Text('Money in')),
+              ButtonSegment(value: 'OUT', label: Text('Money out')),
+              ButtonSegment(value: 'IN', label: Text('Money in')),
             ],
-            selected: {_type == 'TRANSFER' ? 'EXPENSE' : _type},
-            onSelectionChanged: (s) => setState(() => _type = s.first),
+            selected: {_direction},
+            onSelectionChanged: (s) => setState(() => _direction = s.first),
           ),
         ),
         AmountField(controller: _amount, label: 'Amount', prefix: money.symbol),
@@ -537,10 +694,33 @@ class NotificationStatusCard extends StatelessWidget {
   }
 }
 
-/// SMS reading status: turn on, last read time, read now.
+/// SMS reading: turn on, choose how far back to read, last read time,
+/// read now, read older messages.
 class SmsStatusCard extends StatelessWidget {
   const SmsStatusCard({super.key, required this.sync});
   final SmsSync sync;
+
+  Future<void> _readOlder(BuildContext context) async {
+    final days = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: ListView(shrinkWrap: true, children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text('Read older SMS', style: Theme.of(ctx).textTheme.titleMedium),
+          ),
+          for (final e in SmsSync.historyChoices.entries.where((e) => e.key > 0))
+            ListTile(title: Text(e.value), onTap: () => Navigator.pop(ctx, e.key)),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
+            child: Text('Payments already in the inbox, added or ignored are recognised and not added again.'),
+          ),
+        ]),
+      ),
+    );
+    if (days != null) await sync.readHistory(days);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -570,8 +750,11 @@ class SmsStatusCard extends StatelessWidget {
         ),
       );
     }
+    if (sync.needsHistoryChoice) return _HistoryChoiceCard(sync: sync);
     final last = sync.lastScan;
     final result = sync.lastResult;
+    final added = (result?['added'] as int?) ?? 0;
+    final auto = (result?['auto_added'] as int?) ?? 0;
     return Card(
       child: ListTile(
         leading: sync.scanning
@@ -581,13 +764,65 @@ class SmsStatusCard extends StatelessWidget {
         subtitle: Text(sync.error ??
             [
               if (last != null) 'Last read ${DateFormat('d MMM, h:mm a').format(last)}',
-              if (result != null && (result['added'] as int) > 0) '${result['added']} new',
+              if (added > 0) '$added new',
+              if (auto > 0) '$auto added automatically',
             ].join(' · ')),
-        trailing: IconButton(
-          tooltip: 'Read now',
-          onPressed: sync.scanning ? null : () => sync.scan(force: true),
-          icon: const Icon(Icons.refresh),
-        ),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          IconButton(
+            tooltip: 'Read now',
+            onPressed: sync.scanning ? null : () => sync.scan(force: true),
+            icon: const Icon(Icons.refresh),
+          ),
+          PopupMenuButton<String>(
+            enabled: !sync.scanning,
+            onSelected: (_) => _readOlder(context),
+            itemBuilder: (_) => const [PopupMenuItem(value: 'older', child: Text('Read older SMS…'))],
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// After SMS access is allowed: how far back should Finverse read?
+class _HistoryChoiceCard extends StatefulWidget {
+  const _HistoryChoiceCard({required this.sync});
+  final SmsSync sync;
+
+  @override
+  State<_HistoryChoiceCard> createState() => _HistoryChoiceCardState();
+}
+
+class _HistoryChoiceCardState extends State<_HistoryChoiceCard> {
+  int _days = SmsSync.defaultHistoryDays;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.history, color: theme.colorScheme.primary),
+            const SizedBox(width: 10),
+            Expanded(child: Text('Read past payments too?', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
+          ]),
+          const SizedBox(height: 8),
+          const Text('Choose how far back to read bank SMS. After this, only new messages are read. '
+              'You can read older ones later from this card.'),
+          const SizedBox(height: 12),
+          Wrap(spacing: 8, runSpacing: 6, children: [
+            for (final e in SmsSync.historyChoices.entries)
+              ChoiceChip(label: Text(e.value), selected: _days == e.key, onSelected: (_) => setState(() => _days = e.key)),
+          ]),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: widget.sync.scanning ? null : () => widget.sync.startReading(_days),
+            icon: const Icon(Icons.play_arrow),
+            label: Text(_days == 0 ? 'Start with new messages' : 'Read and start'),
+          ),
+        ]),
       ),
     );
   }

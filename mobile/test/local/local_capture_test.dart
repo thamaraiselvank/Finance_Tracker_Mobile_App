@@ -54,7 +54,7 @@ void main() {
         sms(swiggy()),
         sms('123456 is your OTP for txn of Rs 99 at X on card ending 9012', at: t0.add(const Duration(minutes: 1))),
       ]);
-      expect(result, {'read': 2, 'added': 1, 'duplicates': 0, 'skipped': 1, 'ids': hasLength(1)});
+      expect(result, {'read': 2, 'added': 1, 'auto_added': 0, 'auto_ignored': 0, 'duplicates': 0, 'skipped': 1, 'ids': hasLength(1)});
       expect(await capture.pendingCount(), 1);
       expect(await transactions.list(), isEmpty);
       expect(await balanceOf(id), 1000);
@@ -138,7 +138,11 @@ void main() {
       // …and so does a new one next week.
       await capture.ingest([sms(swiggy(ref: '431234500004', amount: '310.00'), at: t0.add(const Duration(days: 7)))]);
       expect((await capture.pending()).every((p) => p['category_id'] == shopping), isTrue);
-      expect(db.queryOne('SELECT hits FROM merchant_rules WHERE merchant_key = ?', ['swiggy'])!['hits'], 1);
+      final rule = db.queryOne("SELECT * FROM capture_rules WHERE match_kind = 'PARTY' AND match_value = 'swiggy'")!;
+      expect(rule['hits'], 1);
+      expect(rule['direction'], 'OUT');
+      expect(rule['type'], 'EXPENSE');
+      expect((await capture.pending()).first['suggest_source'], 'RULE');
       expect(a, isNotNull);
     });
 
@@ -221,7 +225,8 @@ void main() {
       expect(upgraded.queryOne('PRAGMA user_version')!.values.first, migrations.length);
       expect(upgraded.queryOne("SELECT name, balance_minor, last4 FROM accounts WHERE id = 'a1'"),
           {'name': 'Old account', 'balance_minor': 12345, 'last4': null});
-      expect(upgraded.queryOne('SELECT count(*) AS n FROM merchant_rules')!['n'], 0);
+      expect(upgraded.queryOne('SELECT count(*) AS n FROM capture_rules')!['n'], 0);
+      expect(upgraded.queryOne("SELECT type FROM categories WHERE id = ?", [CategoryIds.brokerFunds])!['type'], 'TRANSFER');
       upgraded.close();
     } finally {
       dir.deleteSync(recursive: true);

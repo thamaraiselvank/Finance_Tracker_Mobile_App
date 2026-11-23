@@ -53,13 +53,32 @@ In this mode:
   Financial health and the Financial check-up (rule-based, no AI).
 - **Bank SMS → review inbox (Android):** after the user allows SMS access,
   Finverse reads SMS from banks and payment apps (letter sender IDs only;
-  personal messages are never read into the app), first for the last 180
-  days, then whenever the app is opened. Each payment waits in **More →
-  Review inbox** (also shown on Home): swipe right to add it to Money, left
-  to ignore, tap to edit; every action can be undone. Category choices are
-  remembered per merchant, and account last digits are learned, so later
-  payments arrive already filled in. The same payment seen twice (for example
-  SMS plus a payment-app message) is merged.
+  personal messages are never read into the app). After allowing access the
+  user chooses how far back to read (only new messages, 15 days, 1 month,
+  3 months or 6 months); after that only new SMS are read, whenever the app
+  is opened, and older ones can be read later ("Read older SMS…"). Each
+  payment waits in **More → Review inbox** (also shown on Home): swipe right
+  to add it to Money (green), left to ignore (red), tap to edit; every action
+  can be undone. Each card shows where it was seen (SMS · bank, Google Pay
+  notification, screenshot; a payment seen twice is merged and shows both)
+  and why it got its category ("Learned from your choice", "Built-in",
+  "Guess · please check").
+- **Learning (`lib/capture/rules.dart`):** confirming a payment teaches
+  Finverse its type and category for that payee. Tapping the category opens
+  "What is this payment?" (Income / Spending / Own money / Ignore, category,
+  detail) with **Do the same for payments like this**, optionally **Add
+  these to Money automatically** and **Also change the N already added**
+  (balances corrected). Payments are recognised by the other side's UPI ID,
+  then their name (also from NEFT / IMPS formats), then, for messages with
+  no name, the message's wording without amounts, dates and numbers. Money
+  in and money out are separate rules. Rules are listed, edited and deleted
+  in **More → Auto-categorise rules**.
+- **Own money (transfers):** broker funds (Zerodha's quarterly settlement,
+  adding funds to Kite, Groww, Upstox…), credit card bill payments, ATM cash,
+  wallet top-ups and self transfers are recognised by built-in rules. They
+  move the account balance but never count as income or spending (totals,
+  budgets, savings rate, Financial health, tax). Account last digits are
+  learned too, so later payments arrive already filled in.
   The parser is `lib/capture/sms_parser.dart`. If a real SMS isn't recognised,
   add an anonymised copy to `test/capture/sms_parser_test.dart` and fix the
   parser.

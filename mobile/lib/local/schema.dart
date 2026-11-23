@@ -1,5 +1,7 @@
 import 'package:sqlite3/sqlite3.dart';
 
+import '../capture/rules.dart';
+
 /// Database schema, as an ordered list of migrations.
 ///
 /// The database stores how many have run in `PRAGMA user_version`; on open,
@@ -13,7 +15,7 @@ import 'package:sqlite3/sqlite3.dart';
 ///  * Booleans are INTEGER 0/1.
 ///  * There is no users table or user_id column: the phone has one owner.
 ///    The single `profile` row replaces `users`.
-const List<String> migrations = [_v1, _v2, _v3, _v4];
+const List<String> migrations = [_v1, _v2, _v3, _v4, _v5];
 
 void migrate(Database db) {
   final current = db.select('PRAGMA user_version').first.values.first as int;
@@ -22,6 +24,7 @@ void migrate(Database db) {
     try {
       db.execute(migrations[version]);
       if (version == 0) _seedCategories(db);
+      if (version == 4) _backfillV5(db);
       db.execute('PRAGMA user_version = ${version + 1}');
       db.execute('COMMIT');
     } catch (_) {
@@ -271,6 +274,73 @@ CREATE TABLE scheduled_cashflows (
 );
 CREATE INDEX idx_scheduled_active ON scheduled_cashflows(is_active, start_date);
 ''';
+
+/// v5: rules that learn more than a category (step 3.5), and transfers of
+/// the user's own money that move a balance without being income/spending.
+const _v5 = '''
+-- Which way a transfer moved money for its account: IN (e.g. broker
+-- settlement received) or OUT (e.g. adding funds to the broker). NULL for
+-- transfers entered by hand, which (as on the web app) don't move a balance.
+ALTER TABLE transactions ADD COLUMN direction TEXT CHECK (direction IN ('IN', 'OUT'));
+-- How a captured payment can be recognised again (see capture/rules.dart).
+ALTER TABLE transactions ADD COLUMN vpa TEXT;
+ALTER TABLE transactions ADD COLUMN template_key TEXT;
+-- Why the type / category were chosen: RULE (learned), BUILTIN, GUESS
+-- (keyword), USER (changed in the inbox); with a short label to show.
+ALTER TABLE transactions ADD COLUMN rule_id TEXT;
+ALTER TABLE transactions ADD COLUMN suggest_source TEXT;
+ALTER TABLE transactions ADD COLUMN suggest_label TEXT;
+-- Where the payment was seen, e.g. "SMS:HDFC Bank|UPI_NOTIFICATION:Google Pay".
+ALTER TABLE transactions ADD COLUMN seen_via TEXT;
+
+UPDATE transactions SET direction = CASE type WHEN 'INCOME' THEN 'IN' WHEN 'EXPENSE' THEN 'OUT' END
+WHERE source IN ('SMS', 'UPI_NOTIFICATION', 'SHARE');
+UPDATE transactions SET seen_via = source || COALESCE(':' || bank, '') WHERE source IN ('SMS', 'UPI_NOTIFICATION', 'SHARE');
+UPDATE transactions SET suggest_source = 'GUESS' WHERE status = 'PENDING' AND category_id IS NOT NULL;
+
+-- "Payments like this are <type> · <category>, from <account>".
+CREATE TABLE capture_rules (
+  id TEXT PRIMARY KEY,
+  match_kind TEXT NOT NULL CHECK (match_kind IN ('UPI', 'PARTY', 'TEMPLATE')),
+  match_value TEXT NOT NULL,
+  direction TEXT NOT NULL CHECK (direction IN ('IN', 'OUT')),
+  type TEXT NOT NULL CHECK (type IN ('INCOME', 'EXPENSE', 'TRANSFER', 'IGNORE')),
+  category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+  subcategory_id TEXT REFERENCES subcategories(id) ON DELETE SET NULL,
+  account_id TEXT REFERENCES accounts(id) ON DELETE SET NULL,
+  auto_add INTEGER NOT NULL DEFAULT 0,
+  label TEXT NOT NULL,
+  hits INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE (match_kind, match_value, direction)
+);
+
+-- Category-only rules from v2 become name rules.
+INSERT INTO capture_rules (id, match_kind, match_value, direction, type, category_id, subcategory_id, label, hits, created_at, updated_at)
+SELECT lower(hex(randomblob(16))), 'PARTY', r.merchant_key, CASE c.type WHEN 'INCOME' THEN 'IN' ELSE 'OUT' END, c.type,
+       r.category_id, r.subcategory_id, r.merchant_key, r.hits, r.updated_at, r.updated_at
+FROM merchant_rules r JOIN categories c ON c.id = r.category_id WHERE c.type IN ('INCOME', 'EXPENSE');
+DROP TABLE merchant_rules;
+
+INSERT OR IGNORE INTO categories (id, name, type, icon, color, is_system, created_at) VALUES
+  ('00000000-0000-0000-0000-000000000030', 'Broker funds', 'TRANSFER', 'TrendingUp', '#0EA5E9', 1, '2026-11-23T00:00:00.000Z'),
+  ('00000000-0000-0000-0000-000000000031', 'Own account transfer', 'TRANSFER', 'Repeat', '#0EA5E9', 1, '2026-11-23T00:00:00.000Z'),
+  ('00000000-0000-0000-0000-000000000032', 'Credit card bill payment', 'TRANSFER', 'CreditCard', '#0EA5E9', 1, '2026-11-23T00:00:00.000Z'),
+  ('00000000-0000-0000-0000-000000000033', 'Wallet top-up', 'TRANSFER', 'Wallet', '#0EA5E9', 1, '2026-11-23T00:00:00.000Z'),
+  ('00000000-0000-0000-0000-000000000034', 'Cash withdrawal', 'TRANSFER', 'Banknote', '#0EA5E9', 1, '2026-11-23T00:00:00.000Z');
+''';
+
+/// Fills the v5 match columns for payments captured before v5.
+void _backfillV5(Database db) {
+  final rows = db.select("SELECT id, raw_text, merchant FROM transactions WHERE raw_text IS NOT NULL AND source IN ('SMS', 'UPI_NOTIFICATION', 'SHARE')");
+  final update = db.prepare('UPDATE transactions SET vpa = ?, template_key = ? WHERE id = ?');
+  for (final r in rows) {
+    final keys = RuleKeys.of(text: r['raw_text'] as String, merchant: r['merchant'] as String?);
+    update.execute([keys.vpa, keys.template, r['id']]);
+  }
+  update.close();
+}
 
 /// Default categories, identical to the backend seed (same ids), so data
 /// moved between the web app and the phone keeps its categories.

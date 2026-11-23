@@ -32,14 +32,18 @@ class SmsInbox {
 /// Keeps the review inbox fed from bank SMS.
 ///
 /// No background service: new SMS are read when the app starts and whenever
-/// it comes back to the foreground. The first scan looks back [firstScanDays].
+/// it comes back to the foreground. How far back the first read goes is the
+/// user's choice ([historyChoices]: none, 15 days … 6 months); after that
+/// only new messages are read. Older ones can be read later ([readHistory]).
 class SmsSync extends ChangeNotifier with WidgetsBindingObserver {
   SmsSync(this.capture, {this.inbox = const SmsInbox()});
 
   final CaptureService capture;
   final SmsInbox inbox;
 
-  static const firstScanDays = 180;
+  /// Days of past SMS the user can choose to read (0 = only new messages).
+  static const historyChoices = {0: 'Only new messages', 15: 'Last 15 days', 30: 'Last 1 month', 90: 'Last 3 months', 180: 'Last 6 months'};
+  static const defaultHistoryDays = 30;
   static const _minGap = Duration(minutes: 1);
 
   bool get supported => inbox.supported;
@@ -53,6 +57,9 @@ class SmsSync extends ChangeNotifier with WidgetsBindingObserver {
   Map<String, dynamic>? lastResult;
   String? error;
 
+  /// SMS access is on but the user hasn't said how far back to read yet.
+  bool get needsHistoryChoice => granted && lastScan == null;
+
   Future<void> init() async {
     WidgetsBinding.instance.addObserver(this);
     lastScan = await capture.lastSmsScan();
@@ -62,32 +69,55 @@ class SmsSync extends ChangeNotifier with WidgetsBindingObserver {
     granted = status.isGranted;
     permanentlyDenied = status.isPermanentlyDenied;
     notifyListeners();
-    if (granted) await scan();
+    if (granted && !needsHistoryChoice) await scan();
   }
 
-  /// Asks for SMS access and, if given, reads past messages.
+  /// Asks for SMS access. Reading starts after [startReading].
   Future<bool> enable() async {
     if (!supported) return false;
     final status = await Permission.sms.request();
     granted = status.isGranted;
     permanentlyDenied = status.isPermanentlyDenied;
     notifyListeners();
-    if (granted) await scan(force: true);
+    if (granted && !needsHistoryChoice) await scan(force: true);
     return granted;
   }
 
+  /// The user's choice: read the last [days] of SMS now (0 = none), then
+  /// keep reading new ones.
+  Future<void> startReading(int days) async {
+    if (!supported || !granted) return;
+    if (days <= 0) {
+      final now = DateTime.now();
+      await capture.setLastSmsScan(now);
+      lastScan = now;
+      lastResult = null;
+      notifyListeners();
+      return;
+    }
+    await _read(since: DateTime.now().subtract(Duration(days: days)));
+  }
+
+  /// Reads older SMS again (already captured ones are recognised and skipped).
+  Future<void> readHistory(int days) => _read(since: DateTime.now().subtract(Duration(days: days)));
+
   Future<void> openSettings() => openAppSettings();
 
-  /// Reads SMS received since the last scan (or the last [firstScanDays]).
+  /// Reads SMS received since the last scan.
   Future<void> scan({bool force = false}) async {
+    if (!supported || !granted || scanning || lastScan == null) return;
+    final now = DateTime.now();
+    if (!force && now.difference(lastScan!) < _minGap) return;
+    await _read(since: lastScan!);
+  }
+
+  Future<void> _read({required DateTime since}) async {
     if (!supported || !granted || scanning) return;
     final now = DateTime.now();
-    if (!force && lastScan != null && now.difference(lastScan!) < _minGap) return;
     scanning = true;
     error = null;
     notifyListeners();
     try {
-      final since = lastScan ?? now.subtract(const Duration(days: firstScanDays));
       final messages = await inbox.read(since: since);
       lastResult = await capture.ingest(messages);
       await capture.setLastSmsScan(now);

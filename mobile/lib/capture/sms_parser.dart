@@ -204,7 +204,14 @@ class SmsParser {
     RegExp('\\btrf to\\s+($_name{2,40}?)\\s+(?:ref|on\\b|upi|\\.)', caseSensitive: false),
     // "UPI/P2M/431234511111/NETFLIX" and "Info: UPI/P2A/…/NAME": one word.
     RegExp(r'\bupi/p2[ma]/\d+/([A-Za-z][A-Za-z0-9&.\-_]{1,40})', caseSensitive: false),
-    RegExp(r'\binfo[:\s]+(?:upi/)?(?:p2[ma]/)?(?:\d+/)?([A-Za-z][A-Za-z0-9&.\-_]{1,40})', caseSensitive: false),
+    // Bank transfers: "NEFT Cr-YESB0000001-ZERODHA BROKING LTD-…",
+    // "Info- NEFT/ZERODHA BROKING/…", "IMPS/P2A/123456/RAHUL KUMAR/…".
+    // Parts with digits (IFSC, references) are skipped; the name has none.
+    RegExp(
+      r'\b(?:neft|imps|rtgs)\s*(?:cr|dr)?\s*[-/:]\s*(?:[a-z]*\d[a-z0-9]*\s*[-/:]\s*)*([A-Za-z][A-Za-z&. ]{1,40}?)\s*(?:[-/]|\.\s|\.?$)',
+      caseSensitive: false,
+    ),
+    RegExp(r'\binfo[:\s\-]+(?:upi/)?(?:p2[ma]/)?(?:\d+/)?([A-Za-z][A-Za-z0-9&.\-_]{1,40})', caseSensitive: false),
     RegExp('\\b(?:at|@)\\s+($_name{2,40}?)\\s+(?:on\\b|via\\b|using\\b|ref|txn|avl|\\.\\s|\\.\$)', caseSensitive: false),
     // Payment apps: "Rahul Sharma paid you ₹500".
     RegExp(r"^([A-Za-z][A-Za-z .']{1,40}?)\s+(?:paid|sent|transferred) you\b", caseSensitive: false),

@@ -7,6 +7,7 @@ import '../widgets/common.dart';
 import 'ai_advisor_screen.dart';
 import 'assessment_screen.dart';
 import 'calculators_screen.dart';
+import 'capture_rules_screen.dart';
 import 'debts_screen.dart';
 import 'essentials_screen.dart';
 import 'import_screen.dart';
@@ -49,7 +50,9 @@ class MoreScreen extends StatelessWidget {
         Card(
           child: Column(children: [
             if (context.services.capture != null)
-              _item(context, Icons.inbox_outlined, 'Review inbox', 'Payments read from bank SMS', const ReviewInboxScreen()),
+              _item(context, Icons.inbox_outlined, 'Review inbox', 'Payments from bank SMS, UPI apps and screenshots', const ReviewInboxScreen()),
+            if (context.services.capture != null)
+              _item(context, Icons.auto_awesome_outlined, 'Auto-categorise rules', 'What Finverse learned from your choices', const CaptureRulesScreen()),
             _item(context, Icons.event_repeat, 'Bills & recurring', 'Rent, EMIs, subscriptions, salary', const SchedulesScreen()),
             _item(context, Icons.upload_file, 'Import', 'Bank statements & broker holdings', const ImportScreen()),
             _item(context, Icons.receipt_outlined, 'Income tax estimate', 'Old vs new regime (India)', const TaxScreen()),

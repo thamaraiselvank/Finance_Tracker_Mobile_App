@@ -1,8 +1,9 @@
 /// Suggests a category for an automatically captured transaction.
 ///
-/// Order: 1) what the user chose before for this merchant (learned rules,
-/// stored in the database), 2) the keyword list below, 3) nothing (the user
-/// picks in the review inbox, and that choice becomes a rule).
+/// Order: 1) what the user chose before for payments like this (learned
+/// rules, see rules.dart), 2) built-in rules for own-money transfers and
+/// salary (rules.dart), 3) the keyword list below ("Guess · please check"),
+/// 4) nothing (the user picks in the review inbox, and that becomes a rule).
 ///
 /// The keyword list starts from the backend importer's
 /// `_suggest_statement_category` and adds common Indian merchants.
@@ -25,6 +26,14 @@ class CategoryIds {
   static const loans = '00000000-0000-0000-0000-000000000018';
   static const education = '00000000-0000-0000-0000-000000000019';
   static const travel = '00000000-0000-0000-0000-000000000021';
+
+  // "Own money moving" (type TRANSFER): changes an account balance but is
+  // neither income nor spending. Phone-only (schema v5).
+  static const brokerFunds = '00000000-0000-0000-0000-000000000030';
+  static const ownTransfer = '00000000-0000-0000-0000-000000000031';
+  static const cardBill = '00000000-0000-0000-0000-000000000032';
+  static const walletTopUp = '00000000-0000-0000-0000-000000000033';
+  static const cashWithdrawal = '00000000-0000-0000-0000-000000000034';
 }
 
 const _incomeKeywords = [
@@ -53,7 +62,7 @@ const _expenseKeywords = [
     'bookmyshow', 'pvr', 'inox', 'cinepolis', 'movie', 'cinema', 'gaming', 'steam', 'playstation'], CategoryIds.entertainment),
   (['insurance', 'premium', 'lic ', 'lic of india', 'policybazaar', 'star health', 'hdfc ergo', 'icici lombard', 'acko', 'digit insurance',
     'max life', 'bajaj allianz', 'care health', 'niva bupa'], CategoryIds.insurance),
-  (['emi', 'loan repayment', 'loan payment', 'loan a/c', 'bajaj finance', 'bajaj finserv', 'home credit', 'credit card payment'],
+  (['emi', 'loan repayment', 'loan payment', 'loan a/c', 'bajaj finance', 'bajaj finserv', 'home credit'],
     CategoryIds.loans),
   (['tuition', 'course fee', 'school', 'college', 'university', 'education', 'udemy', 'coursera', 'byju', 'unacademy', 'upgrad', 'vedantu'],
     CategoryIds.education),

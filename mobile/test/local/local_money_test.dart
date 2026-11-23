@@ -266,7 +266,9 @@ void main() {
   group('categories', () {
     test('system categories come with their subcategories, ordered by name', () async {
       final list = await LocalCategoriesService(db).list();
-      expect(list, hasLength(17));
+      // The backend's 17, plus 5 phone-only "own money" transfer categories.
+      expect(list, hasLength(22));
+      expect(list.where((c) => c['type'] == 'TRANSFER'), hasLength(5));
       final names = list.map((c) => c['name'] as String).toList();
       expect(names, [...names]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase())));
       final f = list.firstWhere((c) => c['id'] == food);

@@ -346,7 +346,8 @@ class AmountWords extends StatelessWidget {
 }
 
 class TextInput extends StatelessWidget {
-  const TextInput({super.key, required this.controller, required this.label, this.required = false, this.maxLines = 1, this.keyboardType, this.obscure = false, this.validator});
+  const TextInput({super.key, required this.controller, required this.label, this.required = false, this.maxLines = 1, this.keyboardType, this.obscure = false, this.validator, this.textCapitalization});
+  final TextCapitalization? textCapitalization;
   final TextEditingController controller;
   final String label;
   final bool required;
@@ -364,7 +365,7 @@ class TextInput extends StatelessWidget {
         maxLines: maxLines,
         keyboardType: keyboardType,
         obscureText: obscure,
-        textCapitalization: keyboardType == null ? TextCapitalization.sentences : TextCapitalization.none,
+        textCapitalization: textCapitalization ?? (keyboardType == null ? TextCapitalization.sentences : TextCapitalization.none),
         decoration: InputDecoration(labelText: label),
         validator: validator ?? (required ? (v) => (v == null || v.trim().isEmpty) ? 'Required' : null : null),
       ),

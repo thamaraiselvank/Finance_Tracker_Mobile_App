@@ -139,7 +139,7 @@ class SharedPaymentScreen extends StatefulWidget {
   State<SharedPaymentScreen> createState() => _SharedPaymentScreenState();
 }
 
-enum _Outcome { working, added, duplicate, notFound, error }
+enum _Outcome { working, added, autoAdded, autoIgnored, duplicate, notFound, error }
 
 class _SharedPaymentScreenState extends State<SharedPaymentScreen> {
   _Outcome _outcome = _Outcome.working;
@@ -180,6 +180,8 @@ class _SharedPaymentScreenState extends State<SharedPaymentScreen> {
         widget.onAdded?.call();
         return _finish(_Outcome.added);
       }
+      if (((result['auto_added'] as int?) ?? 0) > 0) return _finish(_Outcome.autoAdded);
+      if (((result['auto_ignored'] as int?) ?? 0) > 0) return _finish(_Outcome.autoIgnored);
       _finish(_Outcome.duplicate);
     } catch (e) {
       _error = e.toString();
@@ -203,6 +205,8 @@ class _SharedPaymentScreenState extends State<SharedPaymentScreen> {
           '${p!.type == 'INCOME' ? 'Received' : 'Paid'} ${_amount(p.amount)}${p.merchant == null ? '' : ' ${p.type == 'INCOME' ? 'from' : 'to'} ${p.merchant}'}'
               '\nCheck it and swipe right to add it to Money.',
         ),
+      _Outcome.autoAdded => (Icons.auto_awesome, 'Added to Money', 'It matched one of your Auto-categorise rules, so it was added straight away.'),
+      _Outcome.autoIgnored => (Icons.visibility_off_outlined, 'Ignored', 'One of your Auto-categorise rules says to ignore payments like this.'),
       _Outcome.duplicate => (Icons.done_all, 'Already captured', 'This payment is already in your inbox or in Money.'),
       _Outcome.notFound => (Icons.search_off, 'No payment found', 'This doesn\'t look like a payment receipt. Try a screenshot of the payment success screen.'),
       _Outcome.error => (Icons.error_outline, 'Could not read this', _error ?? ''),

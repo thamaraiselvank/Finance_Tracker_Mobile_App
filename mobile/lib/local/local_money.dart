@@ -302,8 +302,10 @@ class LocalTransactionsService implements TransactionsService {
 
       if (existing['status'] == 'CONFIRMED') {
         final oldAccount = existing['account_id'] as String?;
-        if (oldAccount != null) _applyToBalance(oldAccount, existing['type'] as String, -(existing['amount_minor'] as int));
-        _applyToBalance(newAccountId, merged['type'] as String, merged['amount_minor'] as int);
+        if (oldAccount != null) {
+          _applyToBalance(oldAccount, existing['type'] as String, -(existing['amount_minor'] as int), existing['direction'] as String?);
+        }
+        _applyToBalance(newAccountId, merged['type'] as String, merged['amount_minor'] as int, _directionFor(merged));
       }
       _db.execute(
         'UPDATE transactions SET ${columns.keys.map((c) => '$c = ?').join(', ')} WHERE id = ?',
@@ -323,7 +325,7 @@ class LocalTransactionsService implements TransactionsService {
       if (existing == null) throw const NotFoundException('Transaction not found.');
       final accountId = existing['account_id'] as String?;
       if (accountId != null && existing['status'] == 'CONFIRMED') {
-        _applyToBalance(accountId, existing['type'] as String, -(existing['amount_minor'] as int));
+        _applyToBalance(accountId, existing['type'] as String, -(existing['amount_minor'] as int), existing['direction'] as String?);
       }
       if (capturedSources.contains(existing['source'])) {
         _db.execute("UPDATE transactions SET status = 'IGNORED' WHERE id = ?", [id]);
@@ -333,7 +335,11 @@ class LocalTransactionsService implements TransactionsService {
     });
   }
 
-  void _applyToBalance(String accountId, String type, int amountMinor) => applyToBalance(_db, accountId, type, amountMinor);
+  void _applyToBalance(String accountId, String type, int amountMinor, [String? direction]) =>
+      applyToBalance(_db, accountId, type, amountMinor, direction);
+
+  /// A captured payment keeps the way its money moved when its type changes.
+  String? _directionFor(Map<String, Object?> merged) => merged['direction'] as String?;
   void _requireAccount(String accountId) => requireAccount(_db, accountId);
   void _checkCategory(String? categoryId, String? subcategoryId) => checkCategory(_db, categoryId, subcategoryId);
 
@@ -346,10 +352,19 @@ class LocalTransactionsService implements TransactionsService {
   }
 }
 
-/// Income adds to the account balance, expense subtracts; transfers don't
-/// change it. Call with a negative amount to reverse.
-void applyToBalance(LocalDb db, String accountId, String type, int amountMinor) {
-  final delta = switch (type) { 'INCOME' => amountMinor, 'EXPENSE' => -amountMinor, _ => 0 };
+/// Income adds to the account balance, expense subtracts. A transfer of the
+/// user's own money moves it by [direction] (IN adds, OUT subtracts) but is
+/// never counted as income or spending; a transfer without a direction (made
+/// by hand, as on the web app) doesn't change it. Call with a negative amount
+/// to reverse.
+void applyToBalance(LocalDb db, String accountId, String type, int amountMinor, [String? direction]) {
+  final delta = switch (type) {
+    'INCOME' => amountMinor,
+    'EXPENSE' => -amountMinor,
+    'TRANSFER' when direction == 'IN' => amountMinor,
+    'TRANSFER' when direction == 'OUT' => -amountMinor,
+    _ => 0,
+  };
   if (delta == 0) return;
   db.execute('UPDATE accounts SET balance_minor = balance_minor + ?, updated_at = ? WHERE id = ?', [delta, nowTimestamp(), accountId]);
 }
@@ -391,6 +406,7 @@ Json transactionOut(Row r) => {
       'scheduled_occurrence_date': r['scheduled_occurrence_date'],
       'source': r['source'],
       'status': r['status'],
+      'direction': r['direction'],
       'created_at': r['created_at'],
     };
 

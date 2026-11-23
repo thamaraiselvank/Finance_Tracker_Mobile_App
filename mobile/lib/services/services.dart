@@ -187,13 +187,34 @@ class CapturedMessage {
 /// and budgets.
 abstract class CaptureService {
   /// Parses the messages and adds new payments to the inbox. Returns counts:
-  /// `read`, `added`, `duplicates`, `skipped` (not a payment), and `ids`
-  /// (the new inbox items).
+  /// `read`, `added` (to the inbox), `auto_added` (straight to Money by a rule
+  /// with "add automatically"), `auto_ignored` (rule says ignore),
+  /// `duplicates`, `skipped` (not a payment), and `ids` (the new inbox items).
   Future<Json> ingest(List<CapturedMessage> messages);
 
   /// Pending transactions, newest first, in TransactionOut shape plus
-  /// `merchant`, `bank`, `account_last4`, `upi_ref`, `raw_text`, `occurred_at`.
+  /// `merchant`, `bank`, `account_last4`, `upi_ref`, `raw_text`, `occurred_at`,
+  /// `direction` (IN / OUT), `seen_via` (list of {source, label}),
+  /// `suggest_source` (RULE / BUILTIN / GUESS / USER / null), `suggest_label`.
   Future<List<Json>> pending();
+
+  /// What "payments like this one" means for a pending payment: `match_kind`
+  /// (UPI / PARTY / TEMPLATE, or null when nothing can be recognised),
+  /// `match_label`, `direction`, `other_pending` and `past` (confirmed) counts
+  /// of matching payments, and the existing `rule` if any.
+  Future<Json> similar(String id);
+
+  /// Sets the type ('INCOME', 'EXPENSE', 'TRANSFER' or 'IGNORE') and category
+  /// of a pending payment. With `remember`, saves a rule (optionally
+  /// `auto_add`) and applies it to other waiting payments like it; with
+  /// `apply_to_past`, also to confirmed ones (balances are corrected).
+  /// Returns `pending_updated` and `past_updated` counts.
+  Future<Json> classify(String id, Json choice);
+
+  /// Learned rules, most recently used first, with category / account names.
+  Future<List<Json>> rules();
+  Future<void> updateRule(String id, Json changes);
+  Future<void> deleteRule(String id);
   Future<int> pendingCount();
 
   /// Changes a pending transaction without confirming it (category, account,
@@ -201,7 +222,8 @@ abstract class CaptureService {
   Future<void> updatePending(String id, Json changes);
 
   /// Applies [changes] (optional) and confirms. Needs an account. Learns the
-  /// merchant's category and the account's last digits for next time.
+  /// type and category for payments with the same UPI ID / name, and the
+  /// account's last digits, for next time.
   Future<void> confirm(String id, [Json changes = const {}]);
 
   /// Hides the payment. It is remembered, so the same SMS is never added again.

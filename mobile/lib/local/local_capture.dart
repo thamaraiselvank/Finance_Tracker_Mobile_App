@@ -1,11 +1,14 @@
 /// Automatic capture and the review inbox, stored on the phone.
 ///
 /// Flow: message -> [SmsParser] -> duplicate check -> account match ->
-/// category suggestion -> PENDING transaction. The user then confirms
-/// (counts from then on, and teaches the app) or ignores it.
+/// type & category (learned rule, built-in rule, or keyword guess) ->
+/// PENDING transaction. The user then confirms (counts from then on, and
+/// teaches the app) or ignores it. A rule with "add automatically" skips
+/// the inbox; a rule that says "ignore" hides such messages for good.
 library;
 
 import '../capture/categorizer.dart';
+import '../capture/rules.dart';
 import '../capture/sms_parser.dart';
 import '../services/errors.dart';
 import '../services/services.dart';
@@ -13,6 +16,31 @@ import 'local_db.dart';
 import 'local_money.dart';
 import 'py_round.dart';
 import 'validate.dart';
+
+/// The type and category chosen for a captured payment, and why.
+class _Choice {
+  const _Choice({
+    required this.type,
+    this.categoryId,
+    this.subcategoryId,
+    this.accountId,
+    this.ruleId,
+    this.source,
+    this.label,
+    this.autoAdd = false,
+    this.ignore = false,
+  });
+
+  final String type;
+  final String? categoryId, subcategoryId, accountId, ruleId;
+
+  /// RULE, BUILTIN, GUESS or null (nothing suggested).
+  final String? source;
+  final String? label;
+  final bool autoAdd, ignore;
+}
+
+const _ruleTypes = {'INCOME', 'EXPENSE', 'TRANSFER', 'IGNORE'};
 
 class LocalCaptureService implements CaptureService {
   LocalCaptureService(this._db);
@@ -25,7 +53,7 @@ class LocalCaptureService implements CaptureService {
 
   @override
   Future<Json> ingest(List<CapturedMessage> messages) async {
-    var duplicates = 0, skipped = 0;
+    var duplicates = 0, skipped = 0, autoAdded = 0, autoIgnored = 0;
     final ids = <String>[];
     _db.transaction(() {
       for (final m in messages) {
@@ -37,37 +65,43 @@ class LocalCaptureService implements CaptureService {
         final amountMinor = toMinor(parsed.amount);
         // When the payment happened: the receipt's own time if it shows one.
         final at = parsed.occurredAt ?? m.receivedAt;
+        final direction = directionOf(parsed.type);
         final dedupKey = parsed.upiRef != null
             ? 'upi:${parsed.upiRef}'
             : 'msg:${_fnv64('${m.source}|${m.sender}|${m.receivedAt.millisecondsSinceEpoch}|${m.body}')}';
         final exact = _db.queryOne('SELECT id FROM transactions WHERE dedup_key = ?', [dedupKey])?['id'] as String?;
-        final same = exact ?? _nearDuplicate(parsed, amountMinor, at);
+        final same = exact ?? _nearDuplicate(parsed, direction, amountMinor, at);
         if (same != null) {
-          if (exact == null) _enrich(same, parsed, dedupKey);
+          if (exact == null) _enrich(same, parsed, m, dedupKey);
           duplicates++;
           continue;
         }
 
-        final key = parsed.merchant == null ? null : merchantKey(parsed.merchant!);
-        final (categoryId, subcategoryId) = _suggest(parsed.type, key, '${parsed.merchant ?? ''} ${m.body}');
+        final keys = RuleKeys.of(text: m.body, merchant: parsed.merchant);
+        final choice = _choose(keys, direction, parsed.type, m.body, parsed.merchant);
+        final accountId = _matchAccount(parsed.accountLast4) ?? _activeAccount(choice.accountId);
+        final status = choice.ignore ? 'IGNORED' : (choice.autoAdd && accountId != null ? 'CONFIRMED' : 'PENDING');
+        final type = choice.ignore ? parsed.type : choice.type;
         final id = newId();
         _db.execute(
           '''INSERT INTO transactions (id, account_id, category_id, subcategory_id, type, amount_minor, date, description, notes,
-               source, status, merchant, merchant_key, upi_ref, account_last4, bank, raw_text, dedup_key, occurred_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+               source, status, merchant, merchant_key, upi_ref, account_last4, bank, raw_text, dedup_key, occurred_at, created_at,
+               direction, vpa, template_key, rule_id, suggest_source, suggest_label, seen_via)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
           [
             id,
-            _matchAccount(parsed.accountLast4),
-            categoryId,
-            subcategoryId,
-            parsed.type,
+            accountId,
+            choice.categoryId,
+            choice.subcategoryId,
+            type,
             amountMinor,
             dateOnly(at.toLocal()),
             parsed.merchant ?? _fallbackDescription(parsed),
             parsed.note,
             m.source,
+            status,
             parsed.merchant,
-            key,
+            keys.party,
             parsed.upiRef,
             parsed.accountLast4,
             parsed.bank,
@@ -75,12 +109,35 @@ class LocalCaptureService implements CaptureService {
             dedupKey,
             at.toUtc().toIso8601String(),
             nowTimestamp(),
+            direction,
+            keys.vpa,
+            keys.template,
+            choice.ruleId,
+            choice.source,
+            choice.label,
+            _seenEntry(m.source, parsed.bank),
           ],
         );
-        ids.add(id);
+        if (status == 'CONFIRMED') {
+          applyToBalance(_db, accountId!, type, amountMinor, direction);
+          _db.execute('UPDATE capture_rules SET hits = hits + 1 WHERE id = ?', [choice.ruleId]);
+          autoAdded++;
+        } else if (status == 'IGNORED') {
+          autoIgnored++;
+        } else {
+          ids.add(id);
+        }
       }
     });
-    return {'read': messages.length, 'added': ids.length, 'duplicates': duplicates, 'skipped': skipped, 'ids': ids};
+    return {
+      'read': messages.length,
+      'added': ids.length,
+      'auto_added': autoAdded,
+      'auto_ignored': autoIgnored,
+      'duplicates': duplicates,
+      'skipped': skipped,
+      'ids': ids,
+    };
   }
 
   @override
@@ -106,9 +163,9 @@ class LocalCaptureService implements CaptureService {
       requireAccount(_db, accountId);
 
       _db.execute("UPDATE transactions SET status = 'CONFIRMED' WHERE id = ?", [id]);
-      applyToBalance(_db, accountId, row['type'] as String, row['amount_minor'] as int);
+      applyToBalance(_db, accountId, row['type'] as String, row['amount_minor'] as int, row['direction'] as String?);
       _learnAccount(accountId, row['account_last4'] as String?);
-      _learnCategory(row['merchant_key'] as String?, row['category_id'] as String?, row['subcategory_id'] as String?);
+      _learnFromConfirm(row);
     });
   }
 
@@ -125,7 +182,7 @@ class LocalCaptureService implements CaptureService {
       if (row == null) throw const NotFoundException('Transaction not found.');
       if (row['status'] == 'PENDING') return;
       if (row['status'] == 'CONFIRMED' && row['account_id'] != null) {
-        applyToBalance(_db, row['account_id'] as String, row['type'] as String, -(row['amount_minor'] as int));
+        applyToBalance(_db, row['account_id'] as String, row['type'] as String, -(row['amount_minor'] as int), row['direction'] as String?);
       }
       _db.execute("UPDATE transactions SET status = 'PENDING' WHERE id = ?", [id]);
     });
@@ -177,6 +234,162 @@ class LocalCaptureService implements CaptureService {
       );
 
   // -------------------------------------------------------------------------
+  // Teaching: "payments like this one are …"
+  // -------------------------------------------------------------------------
+
+  @override
+  Future<Json> similar(String id) async {
+    final row = _pendingRow(id);
+    final direction = row['direction'] as String? ?? directionOf(row['type'] as String);
+    final key = _keysOf(row).best;
+    if (key == null) {
+      return {'match_kind': null, 'match_label': null, 'direction': direction, 'other_pending': 0, 'past': 0, 'rule': null};
+    }
+    final (kind, value) = key;
+    int count(String status) => _db.queryOne(
+          'SELECT count(*) AS n FROM transactions WHERE ${_column(kind)} = ? AND direction = ? AND status = ? AND id <> ?',
+          [value, direction, status, id],
+        )!['n'] as int;
+    final rule = _findRule(kind, value, direction);
+    return {
+      'match_kind': kind.code,
+      'match_label': _matchLabel(kind, value, row),
+      'direction': direction,
+      'other_pending': count('PENDING'),
+      'past': count('CONFIRMED'),
+      'rule': rule == null ? null : _ruleOut(_ruleRow(rule['id'] as String)!),
+    };
+  }
+
+  @override
+  Future<Json> classify(String id, Json choice) async {
+    final type = readString(choice, 'type', required: true)!.toUpperCase();
+    if (!_ruleTypes.contains(type)) throw ValidationException('type', 'Choose money in, money out, own money or ignore');
+    final ignore = type == 'IGNORE';
+    final categoryId = ignore ? null : readId(choice, 'category_id');
+    final subcategoryId = ignore ? null : readId(choice, 'subcategory_id');
+    final remember = readBool(choice, 'remember') ?? true;
+    final autoAdd = !ignore && (readBool(choice, 'auto_add') ?? false);
+    final applyToPast = readBool(choice, 'apply_to_past') ?? false;
+
+    return _db.transaction(() {
+      final row = _pendingRow(id);
+      _checkCategoryType(categoryId, subcategoryId, type);
+      if (ignore) {
+        _db.execute("UPDATE transactions SET status = 'IGNORED', suggest_source = 'USER' WHERE id = ?", [id]);
+      } else {
+        _db.execute(
+          "UPDATE transactions SET type = ?, category_id = ?, subcategory_id = ?, suggest_source = 'USER', suggest_label = NULL WHERE id = ?",
+          [type, categoryId, subcategoryId, id],
+        );
+      }
+      var pendingUpdated = 0, pastUpdated = 0;
+      final key = _keysOf(row).best;
+      if (remember && key != null) {
+        final (kind, value) = key;
+        final direction = row['direction'] as String? ?? directionOf(row['type'] as String);
+        final ruleId = _saveRule(
+          kind: kind,
+          value: value,
+          direction: direction,
+          type: type,
+          categoryId: categoryId,
+          subcategoryId: subcategoryId,
+          // Payments without account digits (e.g. app notifications) use the
+          // account chosen here; the others are matched by their digits.
+          accountId: row['account_last4'] == null ? row['account_id'] as String? : null,
+          autoAdd: autoAdd,
+          label: _ruleLabel(kind, value, row),
+        );
+        final match = 'WHERE ${_column(kind)} = ? AND direction = ? AND id <> ?';
+        final matchArgs = [value, direction, id];
+
+        // Other waiting payments like it follow right away (not ones the
+        // user already changed by hand).
+        final others = _db.query("SELECT id FROM transactions $match AND status = 'PENDING' AND COALESCE(suggest_source, '') <> 'USER'", matchArgs);
+        for (final o in others) {
+          if (ignore) {
+            _db.execute("UPDATE transactions SET status = 'IGNORED', rule_id = ? WHERE id = ?", [ruleId, o['id']]);
+          } else {
+            _db.execute(
+              "UPDATE transactions SET type = ?, category_id = ?, subcategory_id = ?, rule_id = ?, suggest_source = 'RULE', suggest_label = NULL WHERE id = ?",
+              [type, categoryId, subcategoryId, ruleId, o['id']],
+            );
+          }
+        }
+        pendingUpdated = others.length;
+
+        if (applyToPast) {
+          final past = _db.query("SELECT * FROM transactions $match AND status = 'CONFIRMED'", matchArgs);
+          for (final p in past) {
+            final accountId = p['account_id'] as String?;
+            if (accountId != null) {
+              applyToBalance(_db, accountId, p['type'] as String, -(p['amount_minor'] as int), p['direction'] as String?);
+            }
+            if (ignore) {
+              _db.execute("UPDATE transactions SET status = 'IGNORED', rule_id = ? WHERE id = ?", [ruleId, p['id']]);
+            } else {
+              _db.execute(
+                'UPDATE transactions SET type = ?, category_id = ?, subcategory_id = ?, rule_id = ? WHERE id = ?',
+                [type, categoryId, subcategoryId, ruleId, p['id']],
+              );
+              if (accountId != null) applyToBalance(_db, accountId, type, p['amount_minor'] as int, p['direction'] as String?);
+            }
+          }
+          pastUpdated = past.length;
+        }
+      }
+      return {'pending_updated': pendingUpdated, 'past_updated': pastUpdated};
+    });
+  }
+
+  @override
+  Future<List<Json>> rules() async => _db.query('$_ruleSelect ORDER BY r.updated_at DESC, r.rowid DESC').map(_ruleOut).toList();
+
+  @override
+  Future<void> updateRule(String id, Json changes) async {
+    _db.transaction(() {
+      final rule = _ruleRow(id);
+      if (rule == null) throw const NotFoundException('Rule not found.');
+      final columns = <String, Object?>{};
+      if (changes.containsKey('type')) {
+        final type = readString(changes, 'type', required: true)!.toUpperCase();
+        if (!_ruleTypes.contains(type)) throw ValidationException('type', 'Choose money in, money out, own money or ignore');
+        columns['type'] = type;
+        if (type == 'IGNORE') {
+          columns['category_id'] = null;
+          columns['subcategory_id'] = null;
+          columns['auto_add'] = 0;
+        }
+      }
+      if (changes.containsKey('category_id')) {
+        columns['category_id'] = readId(changes, 'category_id');
+        if (!changes.containsKey('subcategory_id')) columns['subcategory_id'] = null;
+      }
+      if (changes.containsKey('subcategory_id')) columns['subcategory_id'] = readId(changes, 'subcategory_id');
+      if (changes.containsKey('account_id')) {
+        final accountId = readId(changes, 'account_id');
+        if (accountId != null) requireAccount(_db, accountId);
+        columns['account_id'] = accountId;
+      }
+      if (changes.containsKey('auto_add')) columns['auto_add'] = (readBool(changes, 'auto_add') ?? false) ? 1 : 0;
+      if (columns.isEmpty) return;
+      final merged = {...rule, ...columns};
+      _checkCategoryType(merged['category_id'] as String?, merged['subcategory_id'] as String?, merged['type'] as String);
+      if (merged['type'] == 'IGNORE') columns['auto_add'] = 0;
+      columns['updated_at'] = nowTimestamp();
+      _db.execute('UPDATE capture_rules SET ${columns.keys.map((c) => '$c = ?').join(', ')} WHERE id = ?', [...columns.values, id]);
+    });
+  }
+
+  @override
+  Future<void> deleteRule(String id) async {
+    if (_ruleRow(id) == null) throw const NotFoundException('Rule not found.');
+    _db.execute('DELETE FROM capture_rules WHERE id = ?', [id]);
+    _db.execute('UPDATE transactions SET rule_id = NULL WHERE rule_id = ?', [id]);
+  }
+
+  // -------------------------------------------------------------------------
 
   Row _pendingRow(String id) {
     final row = _db.queryOne('SELECT * FROM transactions WHERE id = ?', [id]);
@@ -203,25 +416,172 @@ class LocalCaptureService implements CaptureService {
       final type = readString(changes, 'type', required: true)!.toUpperCase();
       if (!transactionTypes.contains(type)) throw ValidationException('type', 'Choose income, expense or transfer');
       columns['type'] = type;
+      // A category of the old type no longer fits.
+      final categoryId = columns.containsKey('category_id') ? columns['category_id'] as String? : row['category_id'] as String?;
+      if (categoryId != null && _categoryType(categoryId) != type) {
+        columns['category_id'] = null;
+        columns['subcategory_id'] = null;
+      }
+    }
+    if (changes.containsKey('direction')) {
+      // Fixes a message read the wrong way round (money in vs out).
+      final direction = readString(changes, 'direction', required: true)!.toUpperCase();
+      if (direction != 'IN' && direction != 'OUT') throw ValidationException('direction', 'Choose money in or money out');
+      columns['direction'] = direction;
     }
     if (changes.containsKey('amount')) columns['amount_minor'] = toMinor(readNumber(changes, 'amount', required: true, gt: 0)!);
     if (changes.containsKey('description')) columns['description'] = readString(changes, 'description', required: true);
     if (changes.containsKey('date')) columns['date'] = readDate(changes, 'date', required: true);
     if (changes.containsKey('notes')) columns['notes'] = readString(changes, 'notes');
     if (columns.isEmpty) return;
+    if (columns.containsKey('category_id') || columns.containsKey('type')) {
+      columns['suggest_source'] = 'USER';
+      columns['suggest_label'] = null;
+    }
     _db.execute('UPDATE transactions SET ${columns.keys.map((c) => '$c = ?').join(', ')} WHERE id = ?', [...columns.values, row['id']]);
   }
 
+  /// Learned rule, built-in rule, or keyword guess, in that order.
+  _Choice _choose(RuleKeys keys, String direction, String parsedType, String text, String? merchant) {
+    for (final (kind, value) in keys.all) {
+      final rule = _findRule(kind, value, direction);
+      if (rule == null) continue;
+      final type = rule['type'] as String;
+      return _Choice(
+        type: type == 'IGNORE' ? parsedType : type,
+        categoryId: rule['category_id'] as String?,
+        subcategoryId: rule['subcategory_id'] as String?,
+        accountId: rule['account_id'] as String?,
+        ruleId: rule['id'] as String,
+        source: 'RULE',
+        autoAdd: rule['auto_add'] == 1,
+        ignore: type == 'IGNORE',
+      );
+    }
+    final builtin = builtinRule(direction: direction, text: text, merchant: merchant);
+    if (builtin != null) {
+      return _Choice(type: builtin.type, categoryId: builtin.categoryId, source: 'BUILTIN', label: builtin.label);
+    }
+    final guess = suggestCategory(parsedType, '${merchant ?? ''} $text');
+    return _Choice(type: parsedType, categoryId: guess, source: guess == null ? null : 'GUESS');
+  }
+
+  Row? _findRule(MatchKind kind, String value, String direction) => _db.queryOne(
+        'SELECT * FROM capture_rules WHERE match_kind = ? AND match_value = ? AND direction = ?',
+        [kind.code, value, direction],
+      );
+
+  /// Creates or updates the rule; returns its id.
+  String _saveRule({
+    required MatchKind kind,
+    required String value,
+    required String direction,
+    required String type,
+    required String? categoryId,
+    required String? subcategoryId,
+    required String? accountId,
+    required bool? autoAdd,
+    required String label,
+  }) {
+    final now = nowTimestamp();
+    final existing = _findRule(kind, value, direction);
+    if (existing != null) {
+      _db.execute(
+        '''UPDATE capture_rules SET type = ?, category_id = ?, subcategory_id = ?, account_id = COALESCE(?, account_id),
+             auto_add = COALESCE(?, auto_add), hits = hits + 1, updated_at = ? WHERE id = ?''',
+        [type, categoryId, subcategoryId, accountId, autoAdd == null ? null : (autoAdd ? 1 : 0), now, existing['id']],
+      );
+      return existing['id'] as String;
+    }
+    final id = newId();
+    _db.execute(
+      '''INSERT INTO capture_rules (id, match_kind, match_value, direction, type, category_id, subcategory_id, account_id, auto_add,
+           label, hits, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)''',
+      [id, kind.code, value, direction, type, categoryId, subcategoryId, accountId, (autoAdd ?? false) ? 1 : 0, label, now, now],
+    );
+    return id;
+  }
+
+  /// Confirming teaches quietly: the payee's UPI ID or name now means this
+  /// type and category. (Rules on message wording are only made when the
+  /// user asks, in the "payments like this" sheet, because wording alone is
+  /// a weaker match.)
+  void _learnFromConfirm(Row row) {
+    final categoryId = row['category_id'] as String?;
+    final type = row['type'] as String;
+    final direction = row['direction'] as String?;
+    if (direction == null || (categoryId == null && type != 'TRANSFER')) return;
+    final keys = _keysOf(row);
+    final used = row['rule_id'] == null ? null : _ruleRow(row['rule_id'] as String);
+    final (MatchKind, String)? key = used != null
+        ? (MatchKind.fromCode(used['match_kind'] as String), used['match_value'] as String)
+        : (keys.vpa != null ? (MatchKind.upi, keys.vpa!) : (keys.party != null ? (MatchKind.party, keys.party!) : null));
+    if (key == null) return;
+    final (kind, value) = key;
+    final ruleId = _saveRule(
+      kind: kind,
+      value: value,
+      direction: direction,
+      type: type,
+      categoryId: categoryId,
+      subcategoryId: row['subcategory_id'] as String?,
+      accountId: row['account_last4'] == null ? row['account_id'] as String? : null,
+      autoAdd: null,
+      label: _ruleLabel(kind, value, row),
+    );
+    _db.execute(
+      '''UPDATE transactions SET type = ?, category_id = ?, subcategory_id = ?, rule_id = ?, suggest_source = 'RULE', suggest_label = NULL
+         WHERE status = 'PENDING' AND ${_column(kind)} = ? AND direction = ? AND COALESCE(suggest_source, '') <> 'USER' ''',
+      [type, categoryId, row['subcategory_id'], ruleId, value, direction],
+    );
+  }
+
+  RuleKeys _keysOf(Row row) => RuleKeys(
+        vpa: row['vpa'] as String?,
+        party: row['merchant_key'] as String?,
+        template: row['template_key'] as String?,
+      );
+
+  static String _column(MatchKind kind) => switch (kind) {
+        MatchKind.upi => 'vpa',
+        MatchKind.party => 'merchant_key',
+        MatchKind.template => 'template_key',
+      };
+
+  String _ruleLabel(MatchKind kind, String value, Row row) => switch (kind) {
+        MatchKind.upi => value,
+        MatchKind.party => row['merchant'] as String? ?? value,
+        MatchKind.template => value.length > 90 ? '${value.substring(0, 90)}…' : value,
+      };
+
+  String _matchLabel(MatchKind kind, String value, Row row) => switch (kind) {
+        MatchKind.upi => 'UPI ID $value',
+        MatchKind.party => 'name “${row['merchant'] ?? value}”',
+        MatchKind.template => 'messages worded like this one${row['bank'] == null ? '' : ' from ${row['bank']}'}',
+      };
+
+  String? _categoryType(String categoryId) => _db.queryOne('SELECT type FROM categories WHERE id = ?', [categoryId])?['type'] as String?;
+
+  void _checkCategoryType(String? categoryId, String? subcategoryId, String type) {
+    checkCategory(_db, categoryId, subcategoryId);
+    if (categoryId != null && _categoryType(categoryId) != type) {
+      throw ValidationException('category_id', 'This category is for a different kind of payment');
+    }
+  }
+
+  String? _activeAccount(String? id) =>
+      id == null ? null : _db.queryOne('SELECT id FROM accounts WHERE id = ? AND is_active = 1', [id])?['id'] as String?;
+
   /// Id of an already captured payment that is the same as [parsed], if any.
-  String? _nearDuplicate(ParsedSms parsed, int amountMinor, DateTime at) {
+  String? _nearDuplicate(ParsedSms parsed, String direction, int amountMinor, DateTime at) {
     final from = at.subtract(duplicateWindow).toUtc().toIso8601String();
     final to = at.add(duplicateWindow).toUtc().toIso8601String();
     final rows = _db.query(
-      'SELECT id, type, upi_ref, account_last4 FROM transactions WHERE amount_minor = ? AND occurred_at BETWEEN ? AND ?',
+      'SELECT id, direction, upi_ref, account_last4 FROM transactions WHERE amount_minor = ? AND occurred_at BETWEEN ? AND ?',
       [amountMinor, from, to],
     );
     for (final r in rows) {
-      if (r['type'] != parsed.type) continue;
+      if (r['direction'] != direction) continue;
       final ref = r['upi_ref'] as String?;
       if (ref != null && parsed.upiRef != null && ref != parsed.upiRef) continue;
       final last4 = r['account_last4'] as String?;
@@ -233,12 +593,15 @@ class LocalCaptureService implements CaptureService {
 
   /// The second sighting of a payment often knows more (a payment-app
   /// notification has the merchant; the bank SMS has the account digits and
-  /// UPI reference). Fill in what the waiting inbox item is missing.
-  void _enrich(String id, ParsedSms parsed, String dedupKey) {
+  /// UPI reference). Fill in what the waiting inbox item is missing, note
+  /// where it was seen, and use a rule the new details now match.
+  void _enrich(String id, ParsedSms parsed, CapturedMessage m, String dedupKey) {
     final row = _db.queryOne("SELECT * FROM transactions WHERE id = ? AND status = 'PENDING'", [id]);
     if (row == null) return;
-    final key = parsed.merchant == null ? null : merchantKey(parsed.merchant!);
+    final keys = RuleKeys.of(text: m.body, merchant: parsed.merchant);
     final upgradeKey = (row['dedup_key'] as String?)?.startsWith('msg:') == true && dedupKey.startsWith('upi:');
+    final seen = _seenEntry(m.source, parsed.bank);
+    final seenVia = row['seen_via'] as String?;
     _db.execute('''
       UPDATE transactions SET
         account_last4 = COALESCE(account_last4, ?),
@@ -247,7 +610,10 @@ class LocalCaptureService implements CaptureService {
         description = CASE WHEN merchant IS NULL AND ? IS NOT NULL THEN ? ELSE description END,
         merchant = COALESCE(merchant, ?),
         merchant_key = COALESCE(merchant_key, ?),
+        vpa = COALESCE(vpa, ?),
+        template_key = COALESCE(template_key, ?),
         account_id = COALESCE(account_id, ?),
+        seen_via = ?,
         dedup_key = CASE WHEN ? THEN ? ELSE dedup_key END
       WHERE id = ?''', [
       parsed.accountLast4,
@@ -255,11 +621,32 @@ class LocalCaptureService implements CaptureService {
       parsed.upiRef,
       parsed.merchant, parsed.merchant,
       parsed.merchant,
-      key,
+      keys.party,
+      keys.vpa,
+      keys.template,
       _matchAccount(parsed.accountLast4),
+      seenVia == null ? seen : (seenVia.split('|').contains(seen) ? seenVia : '$seenVia|$seen'),
       upgradeKey ? 1 : 0, dedupKey,
       id,
     ]);
+
+    // Only a guess (or nothing) is replaced; the user's and rules' choices stay.
+    final source = row['suggest_source'] as String?;
+    if (source != null && source != 'GUESS') return;
+    final updated = _db.queryOne('SELECT * FROM transactions WHERE id = ?', [id])!;
+    final direction = updated['direction'] as String? ?? directionOf(parsed.type);
+    final choice = _choose(_keysOf(updated), direction, directionOf(parsed.type) == 'IN' ? 'INCOME' : 'EXPENSE',
+        '${row['raw_text'] ?? ''} ${m.body}', updated['merchant'] as String?);
+    if (choice.source != 'RULE' && choice.source != 'BUILTIN') return;
+    if (choice.ignore) {
+      _db.execute("UPDATE transactions SET status = 'IGNORED', rule_id = ? WHERE id = ?", [choice.ruleId, id]);
+      return;
+    }
+    _db.execute(
+      '''UPDATE transactions SET type = ?, category_id = ?, subcategory_id = ?, rule_id = ?, suggest_source = ?, suggest_label = ?,
+           account_id = COALESCE(account_id, ?) WHERE id = ?''',
+      [choice.type, choice.categoryId, choice.subcategoryId, choice.ruleId, choice.source, choice.label, _activeAccount(choice.accountId), id],
+    );
   }
 
   /// The account with these last digits; or, if the user has exactly one
@@ -272,18 +659,6 @@ class LocalCaptureService implements CaptureService {
     final all = _db.query('SELECT id, last4 FROM accounts WHERE is_active = 1');
     if (all.length == 1 && all.single['last4'] == null) return all.single['id'] as String;
     return null;
-  }
-
-  (String?, String?) _suggest(String type, String? key, String text) {
-    if (key != null && key.isNotEmpty) {
-      final rule = _db.queryOne(
-        '''SELECT r.category_id, r.subcategory_id FROM merchant_rules r JOIN categories c ON c.id = r.category_id
-           WHERE r.merchant_key = ? AND c.type = ?''',
-        [key, type],
-      );
-      if (rule != null) return (rule['category_id'] as String, rule['subcategory_id'] as String?);
-    }
-    return (suggestCategory(type, text), null);
   }
 
   /// Remembers the account's last digits, and files other waiting payments
@@ -303,27 +678,12 @@ class LocalCaptureService implements CaptureService {
     }
   }
 
-  /// "Swiggy is Food": saved as a rule and applied to waiting payments from
-  /// the same merchant.
-  void _learnCategory(String? key, String? categoryId, String? subcategoryId) {
-    if (key == null || key.isEmpty || categoryId == null) return;
-    _db.execute(
-      '''INSERT INTO merchant_rules (merchant_key, category_id, subcategory_id, hits, updated_at) VALUES (?, ?, ?, 1, ?)
-         ON CONFLICT (merchant_key) DO UPDATE SET category_id = excluded.category_id, subcategory_id = excluded.subcategory_id,
-           hits = merchant_rules.hits + 1, updated_at = excluded.updated_at''',
-      [key, categoryId, subcategoryId, nowTimestamp()],
-    );
-    _db.execute(
-      '''UPDATE transactions SET category_id = ?, subcategory_id = ?
-         WHERE status = 'PENDING' AND merchant_key = ? AND type = (SELECT type FROM categories WHERE id = ?)''',
-      [categoryId, subcategoryId, key, categoryId],
-    );
-  }
-
   String _fallbackDescription(ParsedSms p) {
     final what = p.type == 'INCOME' ? 'Money received' : (p.isCard ? 'Card payment' : 'Payment');
     return p.bank == null ? what : '$what · ${p.bank}';
   }
+
+  static String _seenEntry(String source, String? bank) => bank == null ? source : '$source:$bank';
 
   Json _pendingOut(Row r) => {
         ...transactionOut(r),
@@ -333,6 +693,41 @@ class LocalCaptureService implements CaptureService {
         'upi_ref': r['upi_ref'],
         'raw_text': r['raw_text'],
         'occurred_at': r['occurred_at'],
+        'vpa': r['vpa'],
+        'rule_id': r['rule_id'],
+        'suggest_source': r['suggest_source'],
+        'suggest_label': r['suggest_label'],
+        'seen_via': [
+          for (final entry in (r['seen_via'] as String? ?? r['source'] as String).split('|'))
+            {'source': entry.split(':').first, 'label': entry.contains(':') ? entry.substring(entry.indexOf(':') + 1) : null},
+        ],
+      };
+
+  static const _ruleSelect = '''
+SELECT r.*, c.name AS category_name, sc.name AS subcategory_name, a.name AS account_name
+FROM capture_rules r
+LEFT JOIN categories c ON c.id = r.category_id
+LEFT JOIN subcategories sc ON sc.id = r.subcategory_id
+LEFT JOIN accounts a ON a.id = r.account_id''';
+
+  Row? _ruleRow(String id) => _db.queryOne('$_ruleSelect WHERE r.id = ?', [id]);
+
+  Json _ruleOut(Row r) => {
+        'id': r['id'],
+        'match_kind': r['match_kind'],
+        'match_value': r['match_value'],
+        'label': r['label'],
+        'direction': r['direction'],
+        'type': r['type'],
+        'category_id': r['category_id'],
+        'category_name': r['category_name'],
+        'subcategory_id': r['subcategory_id'],
+        'subcategory_name': r['subcategory_name'],
+        'account_id': r['account_id'],
+        'account_name': r['account_name'],
+        'auto_add': r['auto_add'] == 1,
+        'hits': r['hits'],
+        'updated_at': r['updated_at'],
       };
 }
 

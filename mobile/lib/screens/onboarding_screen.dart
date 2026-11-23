@@ -18,7 +18,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   int _step = 0;
   bool _busy = false;
   late String _currency;
-  late final TextEditingController _income, _expense, _emergency, _age, _retireAge, _dependents;
+  late final TextEditingController _name, _income, _expense, _emergency, _age, _retireAge, _dependents;
   double _savingsRate = 30;
 
   @override
@@ -27,6 +27,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final u = context.read<AppState>().user ?? {};
     String amt(dynamic v) => toDouble(v) > 0 ? toDouble(v).toStringAsFixed(0) : '';
     _currency = (u['currency'] as String?) ?? 'INR';
+    _name = TextEditingController(text: (u['full_name'] as String?)?.trim() ?? '');
     _income = TextEditingController(text: amt(u['monthly_income']));
     _expense = TextEditingController(text: amt(u['monthly_expense']));
     _emergency = TextEditingController(text: amt(u['emergency_fund_amount']));
@@ -38,7 +39,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 
   @override
   void dispose() {
-    for (final c in [_income, _expense, _emergency, _age, _retireAge, _dependents]) {
+    for (final c in [_name, _income, _expense, _emergency, _age, _retireAge, _dependents]) {
       c.dispose();
     }
     super.dispose();
@@ -53,6 +54,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     setState(() => _busy = true);
     try {
       await context.read<AppState>().updateProfile({
+        'full_name': _name.text.trim(),
         'currency': _currency,
         'monthly_income': toDouble(_income.text),
         'monthly_expense': toDouble(_expense.text),
@@ -82,6 +84,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final symbol = Money(_currency).symbol;
     final steps = [
       Column(children: [
+        TextInput(
+          controller: _name,
+          label: 'Your name',
+          required: true,
+          keyboardType: TextInputType.name,
+          textCapitalization: TextCapitalization.words,
+        ),
         DropdownInput<String>(
           label: 'Currency',
           value: _currency,
@@ -112,7 +121,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         Slider(value: _savingsRate, min: 0, max: 90, divisions: 18, label: '${_savingsRate.round()}%', onChanged: (v) => setState(() => _savingsRate = v)),
       ]),
     ];
-    const titles = ['Currency & income', 'Age & retirement', 'Safety net & savings'];
+    const titles = ['About you', 'Age & retirement', 'Safety net & savings'];
 
     return Scaffold(
       appBar: AppBar(
