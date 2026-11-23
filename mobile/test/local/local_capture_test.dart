@@ -54,7 +54,7 @@ void main() {
         sms(swiggy()),
         sms('123456 is your OTP for txn of Rs 99 at X on card ending 9012', at: t0.add(const Duration(minutes: 1))),
       ]);
-      expect(result, {'read': 2, 'added': 1, 'duplicates': 0, 'skipped': 1});
+      expect(result, {'read': 2, 'added': 1, 'duplicates': 0, 'skipped': 1, 'ids': hasLength(1)});
       expect(await capture.pendingCount(), 1);
       expect(await transactions.list(), isEmpty);
       expect(await balanceOf(id), 1000);

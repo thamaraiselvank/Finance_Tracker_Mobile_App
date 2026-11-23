@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import 'capture/app_capture.dart';
 import 'capture/sms_sync.dart';
 import 'config.dart';
 import 'core/api_client.dart';
@@ -36,19 +37,31 @@ Future<void> main() async {
   }
 
   final state = AppState(services.auth)..bootstrap();
-  // Phone-only version: read new bank SMS into the review inbox.
+
+  // Phone-only version: automatic capture into the review inbox from bank
+  // SMS, UPI app notifications and "Share to Finverse".
   final capture = services.capture;
-  final sms = capture == null ? null : (SmsSync(capture)..init());
+  SmsSync? sms;
+  NotificationSync? notifications;
+  if (capture != null) {
+    sms = SmsSync(capture)..init();
+    notifications = NotificationSync(capture, onAdded: sms.refreshCount)..init();
+    ShareCapture(capture, navigatorKey, onAdded: sms.refreshCount).init();
+  }
   runApp(MultiProvider(
     providers: [
       Provider<Services>.value(value: services),
       ChangeNotifierProvider<AppState>.value(value: state),
       if (lock != null) ChangeNotifierProvider<AppLock>.value(value: lock),
       if (sms != null) ChangeNotifierProvider<SmsSync>.value(value: sms),
+      if (notifications != null) ChangeNotifierProvider<NotificationSync>.value(value: notifications),
     ],
     child: FinverseApp(lock: lock),
   ));
 }
+
+/// Lets code outside the widget tree (e.g. a share from another app) open screens.
+final navigatorKey = GlobalKey<NavigatorState>();
 
 class FinverseApp extends StatelessWidget {
   const FinverseApp({super.key, this.lock});
@@ -60,6 +73,7 @@ class FinverseApp extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     return MaterialApp(
+      navigatorKey: navigatorKey,
       title: 'Finverse',
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),

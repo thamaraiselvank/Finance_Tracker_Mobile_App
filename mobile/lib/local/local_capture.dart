@@ -25,39 +25,46 @@ class LocalCaptureService implements CaptureService {
 
   @override
   Future<Json> ingest(List<CapturedMessage> messages) async {
-    var added = 0, duplicates = 0, skipped = 0;
+    var duplicates = 0, skipped = 0;
+    final ids = <String>[];
     _db.transaction(() {
       for (final m in messages) {
-        final parsed = SmsParser.parse(m.sender, m.body);
+        final parsed = m.parsed ?? SmsParser.parse(m.sender, m.body, fromPaymentApp: m.source != 'SMS');
         if (parsed == null) {
           skipped++;
           continue;
         }
         final amountMinor = toMinor(parsed.amount);
+        // When the payment happened: the receipt's own time if it shows one.
+        final at = parsed.occurredAt ?? m.receivedAt;
         final dedupKey = parsed.upiRef != null
             ? 'upi:${parsed.upiRef}'
             : 'msg:${_fnv64('${m.source}|${m.sender}|${m.receivedAt.millisecondsSinceEpoch}|${m.body}')}';
-        if (_db.queryOne('SELECT 1 FROM transactions WHERE dedup_key = ?', [dedupKey]) != null ||
-            _isNearDuplicate(parsed, amountMinor, m.receivedAt)) {
+        final exact = _db.queryOne('SELECT id FROM transactions WHERE dedup_key = ?', [dedupKey])?['id'] as String?;
+        final same = exact ?? _nearDuplicate(parsed, amountMinor, at);
+        if (same != null) {
+          if (exact == null) _enrich(same, parsed, dedupKey);
           duplicates++;
           continue;
         }
 
         final key = parsed.merchant == null ? null : merchantKey(parsed.merchant!);
         final (categoryId, subcategoryId) = _suggest(parsed.type, key, '${parsed.merchant ?? ''} ${m.body}');
+        final id = newId();
         _db.execute(
-          '''INSERT INTO transactions (id, account_id, category_id, subcategory_id, type, amount_minor, date, description,
+          '''INSERT INTO transactions (id, account_id, category_id, subcategory_id, type, amount_minor, date, description, notes,
                source, status, merchant, merchant_key, upi_ref, account_last4, bank, raw_text, dedup_key, occurred_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
           [
-            newId(),
+            id,
             _matchAccount(parsed.accountLast4),
             categoryId,
             subcategoryId,
             parsed.type,
             amountMinor,
-            dateOnly(m.receivedAt.toLocal()),
+            dateOnly(at.toLocal()),
             parsed.merchant ?? _fallbackDescription(parsed),
+            parsed.note,
             m.source,
             parsed.merchant,
             key,
@@ -66,14 +73,14 @@ class LocalCaptureService implements CaptureService {
             parsed.bank,
             m.body,
             dedupKey,
-            m.receivedAt.toUtc().toIso8601String(),
+            at.toUtc().toIso8601String(),
             nowTimestamp(),
           ],
         );
-        added++;
+        ids.add(id);
       }
     });
-    return {'read': messages.length, 'added': added, 'duplicates': duplicates, 'skipped': skipped};
+    return {'read': messages.length, 'added': ids.length, 'duplicates': duplicates, 'skipped': skipped, 'ids': ids};
   }
 
   @override
@@ -205,11 +212,12 @@ class LocalCaptureService implements CaptureService {
     _db.execute('UPDATE transactions SET ${columns.keys.map((c) => '$c = ?').join(', ')} WHERE id = ?', [...columns.values, row['id']]);
   }
 
-  bool _isNearDuplicate(ParsedSms parsed, int amountMinor, DateTime at) {
+  /// Id of an already captured payment that is the same as [parsed], if any.
+  String? _nearDuplicate(ParsedSms parsed, int amountMinor, DateTime at) {
     final from = at.subtract(duplicateWindow).toUtc().toIso8601String();
     final to = at.add(duplicateWindow).toUtc().toIso8601String();
     final rows = _db.query(
-      'SELECT type, upi_ref, account_last4 FROM transactions WHERE amount_minor = ? AND occurred_at BETWEEN ? AND ?',
+      'SELECT id, type, upi_ref, account_last4 FROM transactions WHERE amount_minor = ? AND occurred_at BETWEEN ? AND ?',
       [amountMinor, from, to],
     );
     for (final r in rows) {
@@ -218,9 +226,40 @@ class LocalCaptureService implements CaptureService {
       if (ref != null && parsed.upiRef != null && ref != parsed.upiRef) continue;
       final last4 = r['account_last4'] as String?;
       if (last4 != null && parsed.accountLast4 != null && last4 != parsed.accountLast4) continue;
-      return true;
+      return r['id'] as String;
     }
-    return false;
+    return null;
+  }
+
+  /// The second sighting of a payment often knows more (a payment-app
+  /// notification has the merchant; the bank SMS has the account digits and
+  /// UPI reference). Fill in what the waiting inbox item is missing.
+  void _enrich(String id, ParsedSms parsed, String dedupKey) {
+    final row = _db.queryOne("SELECT * FROM transactions WHERE id = ? AND status = 'PENDING'", [id]);
+    if (row == null) return;
+    final key = parsed.merchant == null ? null : merchantKey(parsed.merchant!);
+    final upgradeKey = (row['dedup_key'] as String?)?.startsWith('msg:') == true && dedupKey.startsWith('upi:');
+    _db.execute('''
+      UPDATE transactions SET
+        account_last4 = COALESCE(account_last4, ?),
+        bank = CASE WHEN account_last4 IS NULL AND ? IS NOT NULL THEN ? ELSE COALESCE(bank, ?) END,
+        upi_ref = COALESCE(upi_ref, ?),
+        description = CASE WHEN merchant IS NULL AND ? IS NOT NULL THEN ? ELSE description END,
+        merchant = COALESCE(merchant, ?),
+        merchant_key = COALESCE(merchant_key, ?),
+        account_id = COALESCE(account_id, ?),
+        dedup_key = CASE WHEN ? THEN ? ELSE dedup_key END
+      WHERE id = ?''', [
+      parsed.accountLast4,
+      parsed.accountLast4, parsed.bank, parsed.bank,
+      parsed.upiRef,
+      parsed.merchant, parsed.merchant,
+      parsed.merchant,
+      key,
+      _matchAccount(parsed.accountLast4),
+      upgradeKey ? 1 : 0, dedupKey,
+      id,
+    ]);
   }
 
   /// The account with these last digits; or, if the user has exactly one

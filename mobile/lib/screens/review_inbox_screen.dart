@@ -2,6 +2,7 @@ import 'package:intl/intl.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../capture/app_capture.dart';
 import '../capture/sms_sync.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
@@ -236,6 +237,7 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
   @override
   Widget build(BuildContext context) {
     final sync = context.watch<SmsSync?>();
+    final notifications = context.watch<NotificationSync?>();
     final items = _items;
     final readyCount = (items ?? []).where((i) => i['account_id'] != null).length;
     return Scaffold(
@@ -255,10 +257,12 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
       body: RefreshIndicator(
         onRefresh: () async {
           await sync?.scan(force: true);
+          await notifications?.refresh();
           await _load();
         },
         child: ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 32), children: [
           if (sync != null) SmsStatusCard(sync: sync),
+          if (notifications != null) NotificationStatusCard(sync: notifications),
           if (_error != null)
             ErrorView(message: _error!, onRetry: _load)
           else if (items == null)
@@ -267,7 +271,8 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
             const EmptyState(
               icon: Icons.inbox_outlined,
               title: 'All caught up',
-              message: 'New bank and UPI payments appear here automatically. Swipe right to add one to Money, left to ignore it.',
+              message: 'New bank and UPI payments appear here automatically. Swipe right to add one to Money, left to ignore it.\n\n'
+                  'Missing one? Share the payment screenshot to Finverse from your gallery or payment app.',
             )
           else ...[
             Padding(
@@ -482,6 +487,52 @@ class _PendingEditFormState extends State<_PendingEditForm> {
         DateInput(label: 'Date', value: _date, lastDate: DateTime.now(), onChanged: (d) => setState(() => _date = d ?? _date)),
         SaveButton(busy: _busy, onPressed: _save, label: 'Save'),
       ]),
+    );
+  }
+}
+
+/// UPI app notifications: invitation to turn on Notification access.
+class NotificationStatusCard extends StatelessWidget {
+  const NotificationStatusCard({super.key, required this.sync});
+  final NotificationSync sync;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!sync.supported) return const SizedBox.shrink();
+    final theme = Theme.of(context);
+    if (sync.granted) {
+      return Card(
+        child: ListTile(
+          leading: Icon(Icons.notifications_active_outlined, color: theme.colorScheme.primary),
+          title: const Text('Payment app notifications: on'),
+          subtitle: const Text('Google Pay, PhonePe, Paytm, BHIM, CRED, Amazon Pay'),
+        ),
+      );
+    }
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.notifications_outlined, color: theme.colorScheme.primary),
+            const SizedBox(width: 10),
+            Expanded(child: Text('Catch UPI app payments too', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
+          ]),
+          const SizedBox(height: 8),
+          const Text(
+            'Some payments never get a bank SMS. Allow Notification access and Finverse will note payments from '
+            'Google Pay, PhonePe, Paytm and other UPI apps. Notifications from other apps are ignored and nothing is uploaded.',
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: sync.openSettings,
+            icon: const Icon(Icons.settings),
+            label: const Text('Open Notification access'),
+          ),
+          const SizedBox(height: 4),
+          Text('In the list, switch on Finverse, then come back.', style: theme.textTheme.bodySmall),
+        ]),
+      ),
     );
   }
 }

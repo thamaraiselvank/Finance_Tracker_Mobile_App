@@ -21,6 +21,8 @@ class ParsedSms {
     this.bank,
     this.isCard = false,
     this.balance,
+    this.note,
+    this.occurredAt,
   });
 
   /// 'EXPENSE' (money out) or 'INCOME' (money in).
@@ -35,6 +37,13 @@ class ParsedSms {
   /// Available balance after the transaction, when the SMS mentions it.
   final double? balance;
 
+  /// The payer's note, when a receipt shows one ("Dinner split").
+  final String? note;
+
+  /// When the payment happened, if the text says so (receipt screenshots).
+  /// Otherwise the message's arrival time is used.
+  final DateTime? occurredAt;
+
   @override
   String toString() =>
       'ParsedSms($type $amount, last4=$accountLast4, merchant=$merchant, upi=$upiRef, bank=$bank, card=$isCard, bal=$balance)';
@@ -43,7 +52,10 @@ class ParsedSms {
 class SmsParser {
   const SmsParser._();
 
-  static ParsedSms? parse(String sender, String body) {
+  /// [fromPaymentApp]: the text comes from a payment app notification or was
+  /// shared by the user, so it doesn't need account digits or a UPI
+  /// reference to be trusted ("You paid ₹250.00 to Swiggy").
+  static ParsedSms? parse(String sender, String body, {bool fromPaymentApp = false}) {
     final text = body.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (text.isEmpty) return null;
     final lower = text.toLowerCase();
@@ -64,8 +76,10 @@ class SmsParser {
     // Known bank senders need a direction word; unknown senders (shops,
     // apps) must also name an account / card or a UPI reference, to keep
     // order confirmations and adverts out.
-    if (bank == null && last4 == null && upiRef == null) return null;
-    if (last4 == null && upiRef == null && !RegExp(r'a/c|acct|account|card|upi|wallet').hasMatch(lower)) return null;
+    if (!fromPaymentApp) {
+      if (bank == null && last4 == null && upiRef == null) return null;
+      if (last4 == null && upiRef == null && !RegExp(r'a/c|acct|account|card|upi|wallet').hasMatch(lower)) return null;
+    }
 
     return ParsedSms(
       type: type,
@@ -88,6 +102,8 @@ class SmsParser {
     RegExp(r'has requested|requested (?:money|rs|inr|₹)|collect request|is requesting|request(?:ed)? for (?:rs|inr|₹)|sent you a request'),
     RegExp(r'will be (?:auto[- ]?)?debited|to be debited|will be deducted'),
     RegExp(r'pre-?approved|apply now|click (?:here|on)|limited period|get up to|eligible for (?:a|an|instant)|loan of up to|t&c apply|t&cs apply|hurry'),
+    // Payment-app extras: rewards, reminders and payments not finished yet.
+    RegExp(r'scratch card|you(?:.ve| have)? won|rewards? (?:of|worth) (?:rs|inr|₹)|payment (?:is )?pending|is pending|under process|in progress|remind(?:er)? to pay|pay (?:your|now)'),
   ];
 
   /// Failed payments, unless the SMS is the refund of one.
@@ -138,6 +154,8 @@ class SmsParser {
   /// Whichever kind of word comes first decides: "Rs 50 debited from A/c 12
   /// and credited to VPA x" is money out for the reader.
   static String? _direction(String lower) {
+    // "Rahul Sharma paid you ₹500" / "sent you" is money in.
+    if (RegExp(r'\b(?:paid|sent|transferred) you\b').hasMatch(lower)) return 'INCOME';
     final debit = _debitWords.firstMatch(lower)?.start;
     final credit = _creditWords.firstMatch(lower)?.start;
     if (debit == null && credit == null) return null;
@@ -188,8 +206,10 @@ class SmsParser {
     RegExp(r'\bupi/p2[ma]/\d+/([A-Za-z][A-Za-z0-9&.\-_]{1,40})', caseSensitive: false),
     RegExp(r'\binfo[:\s]+(?:upi/)?(?:p2[ma]/)?(?:\d+/)?([A-Za-z][A-Za-z0-9&.\-_]{1,40})', caseSensitive: false),
     RegExp('\\b(?:at|@)\\s+($_name{2,40}?)\\s+(?:on\\b|via\\b|using\\b|ref|txn|avl|\\.\\s|\\.\$)', caseSensitive: false),
-    RegExp('\\bto\\s+($_name{2,40}?)\\s+(?:on\\b|ref|upi|via\\b|\\.\\s|\\.\$)', caseSensitive: false),
-    RegExp('\\bfrom\\s+($_name{2,40}?)\\s+(?:on\\b|ref|upi|via\\b|\\.\\s|\\.\$|\\()', caseSensitive: false),
+    // Payment apps: "Rahul Sharma paid you ₹500".
+    RegExp(r"^([A-Za-z][A-Za-z .']{1,40}?)\s+(?:paid|sent|transferred) you\b", caseSensitive: false),
+    RegExp('\\bto\\s+($_name{2,40}?)\\s*(?:\\son\\b|\\sref|\\supi|\\svia\\b|\\.\\s|\\.?\$)', caseSensitive: false),
+    RegExp('\\bfrom\\s+($_name{2,40}?)\\s*(?:\\son\\b|\\sref|\\supi|\\svia\\b|\\.\\s|\\.?\$|\\()', caseSensitive: false),
     RegExp('\\bby\\s+($_name{2,40}?)\\s*(?:\\(|ref|upi|on\\b|\\.\\s|\\.\$)', caseSensitive: false),
   ];
 
@@ -293,6 +313,8 @@ const _senders = [
   ('PHONPE', 'PhonePe'),
   ('PHONEPE', 'PhonePe'),
   ('GPAY', 'Google Pay'),
+  ('BHIM', 'BHIM'),
+  ('CRED', 'CRED'),
   ('ONECRD', 'OneCard'),
   ('SLCEIT', 'Slice'),
   ('JUPITR', 'Jupiter'),

@@ -10,6 +10,10 @@
 /// backend returns today, so local implementations must produce the same shape.
 library;
 
+import '../capture/sms_parser.dart';
+
+export '../capture/sms_parser.dart' show ParsedSms;
+
 typedef Json = Map<String, dynamic>;
 
 /// Sign-in and the user's profile.
@@ -161,13 +165,19 @@ abstract class AiService {
 /// A message that may describe a payment: a bank SMS today, later also UPI
 /// app notifications and text shared to Finverse.
 class CapturedMessage {
-  const CapturedMessage({required this.source, required this.sender, required this.body, required this.receivedAt});
+  const CapturedMessage({required this.source, required this.sender, required this.body, required this.receivedAt, this.parsed});
 
   /// 'SMS', 'UPI_NOTIFICATION' or 'SHARE' (same values as transactions.source).
   final String source;
+
+  /// SMS sender ID ("AX-HDFCBK"), payment app code ("GPAY"), or "SHARE".
   final String sender;
   final String body;
   final DateTime receivedAt;
+
+  /// Already read (screenshots, which need OCR line sizes). When null the
+  /// body is parsed as message text.
+  final ParsedSms? parsed;
 }
 
 /// Automatic capture and the review inbox (phone-only version).
@@ -177,7 +187,8 @@ class CapturedMessage {
 /// and budgets.
 abstract class CaptureService {
   /// Parses the messages and adds new payments to the inbox. Returns counts:
-  /// `read`, `added`, `duplicates`, `skipped` (not a payment).
+  /// `read`, `added`, `duplicates`, `skipped` (not a payment), and `ids`
+  /// (the new inbox items).
   Future<Json> ingest(List<CapturedMessage> messages);
 
   /// Pending transactions, newest first, in TransactionOut shape plus

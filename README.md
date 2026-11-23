@@ -62,6 +62,20 @@ In this mode:
   parser.
   Publishing on Google Play needs the SMS permission declaration
   ("SMS-based money management").
+- **UPI app notifications (Android):** after the user turns on Notification
+  access for Finverse (button in the Review inbox), payment notifications from
+  Google Pay, PhonePe, Paytm, BHIM, CRED, Amazon Pay and MobiKwik are queued,
+  even while Finverse is closed, and go to the review inbox when it opens.
+  Notifications from any other app, or without an amount, are dropped
+  immediately. A notification and the bank SMS for the same payment become
+  one item, with the SMS adding the account digits and UPI reference.
+- **Share to Finverse:** share a payment screenshot or payment text from any
+  app. Screenshots are read **on the phone** with Google ML Kit text
+  recognition (offline OCR, no AI, nothing uploaded). The rules in
+  `lib/capture/receipt_parser.dart` take the tallest amount on the screen,
+  the name after "Paid to" / "Received from", the UPI reference, the bank and
+  account digits, the note and the receipt's own date and time. The payment
+  then waits in the review inbox like the others.
 - **Not moved yet** (these show "not in the offline version yet"): investments,
   goals, debts, insurance, bills & recurring, tax, calculators, financial
   health, import and AI. Each later step moves more areas to the phone, and
@@ -118,9 +132,11 @@ flutter run
 | `services/remote/` | Cloud implementations, which call the backend (default build) |
 | `local/` | Phone-only implementations: encrypted SQLite database (`local_db.dart`, `schema.dart`), Money services (`local_money.dart`), profile and placeholders (`local_services.dart`), Python-compatible rounding (`py_round.dart`) |
 | `core/app_lock.dart` | Fingerprint / PIN app lock for the phone-only version |
-| `capture/` | SMS parser, category suggestions, SMS sync (reads new SMS on app open) |
+| `capture/` | SMS and notification parser, screenshot (OCR) receipt parser, category suggestions, SMS / notification sync, Share to Finverse |
 | `local/local_capture.dart` | Review inbox: pending payments, duplicates, confirm / ignore / undo, learning |
 | `android/.../SmsReader.kt` | Native SMS inbox reader (channel `finverse/sms`) |
+| `android/.../PaymentNotificationListener.kt` | Queues payment-app notifications (channel `finverse/capture`) |
+| `android/.../MainActivity.kt` | Receives shared screenshots / text for "Share to Finverse" |
 | `screens/` | Auth, onboarding, Home, Money, Wealth, Goals, Debts, Insurance, AI advisor, Calculators, Profile |
 | `widgets/` | Shared UI: stat tiles, forms, empty/error states |
 
