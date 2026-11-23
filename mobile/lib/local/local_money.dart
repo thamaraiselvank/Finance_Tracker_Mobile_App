@@ -14,6 +14,10 @@ import 'validate.dart';
 /// The single on-phone owner. Stands in for the backend's `user_id`.
 const localUserId = 'local-user';
 
+/// Sources whose messages could be read again (SMS, notifications, shares):
+/// deleting such a transaction hides it so it is never captured twice.
+const capturedSources = {'SMS', 'UPI_NOTIFICATION', 'SHARE'};
+
 const accountTypes = {'SAVINGS', 'CURRENT', 'CREDIT_CARD', 'WALLET', 'FIXED_DEPOSIT', 'INVESTMENT', 'OTHER'};
 const transactionTypes = {'INCOME', 'EXPENSE', 'TRANSFER'};
 
@@ -80,6 +84,9 @@ class LocalAccountsService implements AccountsService {
     _db.transaction(() {
       if (_db.queryOne('SELECT id FROM accounts WHERE id = ?', [id]) == null) {
         throw const NotFoundException('Account not found.');
+      }
+      if (_db.queryOne('SELECT 1 FROM scheduled_cashflows WHERE account_id = ?', [id]) != null) {
+        throw const ServiceException('Recurring items in Bills & recurring use this account. Move or delete them first.');
       }
       _db.execute('DELETE FROM transactions WHERE account_id = ?', [id]);
       _db.execute('DELETE FROM accounts WHERE id = ?', [id]);
@@ -318,10 +325,10 @@ class LocalTransactionsService implements TransactionsService {
       if (accountId != null && existing['status'] == 'CONFIRMED') {
         _applyToBalance(accountId, existing['type'] as String, -(existing['amount_minor'] as int));
       }
-      if (existing['source'] == 'MANUAL') {
-        _db.execute('DELETE FROM transactions WHERE id = ?', [id]);
-      } else {
+      if (capturedSources.contains(existing['source'])) {
         _db.execute("UPDATE transactions SET status = 'IGNORED' WHERE id = ?", [id]);
+      } else {
+        _db.execute('DELETE FROM transactions WHERE id = ?', [id]);
       }
     });
   }

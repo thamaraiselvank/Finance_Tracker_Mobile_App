@@ -16,6 +16,9 @@ import 'local_db.dart';
 import 'local_money.dart';
 import 'local_planning.dart';
 import 'local_plans.dart';
+import 'local_wealth.dart';
+
+export 'local_wealth.dart' show LocalAssetsService;
 import 'py_round.dart';
 import 'tax_estimator.dart';
 import 'validate.dart';
@@ -37,7 +40,7 @@ Services localServices(LocalDb db, {TaxRules? taxRules}) => Services(
       goals: LocalGoalsService(db),
       debts: LocalDebtsService(db),
       insurance: LocalInsuranceService(db),
-      schedules: const _PendingSchedules(),
+      schedules: LocalSchedulesService(db),
       tax: taxRules == null ? const _PendingTax() : LocalTaxService(db, taxRules),
       calculators: const LocalCalculatorsService(),
       essentials: const _PendingEssentials(),
@@ -144,74 +147,8 @@ class LocalProfileService implements AuthService {
 }
 
 // ---------------------------------------------------------------------------
-// Wealth summary  (routers/assets.py get_wealth_summary)
-// ---------------------------------------------------------------------------
-
-/// Holdings move to the phone in step 4c. Until then the summary uses account
-/// balances and debts (the backend's formula with no holdings), so net worth
-/// on Home is right for the data on the phone.
-class LocalAssetsService implements AssetsService {
-  LocalAssetsService(this._db);
-  final LocalDb _db;
-
-  @override
-  Future<Json> summary() async {
-    final balance = fromMinor(
-      _db.queryOne('SELECT COALESCE(SUM(balance_minor), 0) AS total FROM accounts WHERE is_active = 1')!['total'] as int,
-    );
-    final debts = _db.queryOne(
-      'SELECT COALESCE(SUM(current_outstanding_minor), 0) AS outstanding, COALESCE(SUM(monthly_emi_minor), 0) AS emi FROM debts',
-    )!;
-    const totalInvested = 0.0;
-    final totalCurrent = 0.0 + balance;
-    final totalPnl = totalCurrent - totalInvested;
-    final totalLiabilities = fromMinor(debts['outstanding'] as int);
-    return {
-      'total_assets_invested': pyRound(totalInvested, 2),
-      'total_assets_current': pyRound(totalCurrent, 2),
-      'total_assets_pnl': pyRound(totalPnl, 2),
-      'total_assets_pnl_pct': 0.0,
-      'total_liabilities_outstanding': pyRound(totalLiabilities, 2),
-      'total_monthly_emi': pyRound(fromMinor(debts['emi'] as int), 2),
-      'net_worth': pyRound(totalCurrent - totalLiabilities, 2),
-      'asset_classes': <Json>[],
-    };
-  }
-
-  static const _na = NotAvailableYetException('Investments (stocks, funds, gold…)');
-  @override
-  Future<void> create(Json asset) => throw _na;
-  @override
-  Future<void> update(String id, Json changes) => throw _na;
-  @override
-  Future<void> delete(String id) => throw _na;
-  @override
-  Future<void> deleteAll() => throw _na;
-  @override
-  Future<Json> refreshPrices() => throw _na;
-}
-
-// ---------------------------------------------------------------------------
 // Not moved to the phone yet. Each throws a clear "coming soon" message.
 // ---------------------------------------------------------------------------
-
-class _PendingSchedules implements SchedulesService {
-  const _PendingSchedules();
-  static const _na = NotAvailableYetException('Bills & recurring');
-  @override
-  Future<List<Json>> list() => throw _na;
-  @override
-  Future<List<Json>> occurrences({required DateTime start, required DateTime end}) => throw _na;
-  @override
-  Future<void> completeOccurrence(String scheduleId, DateTime occurrenceDate, {required double actualAmount, required DateTime actualDate}) =>
-      throw _na;
-  @override
-  Future<void> create(Json schedule) => throw _na;
-  @override
-  Future<void> update(String id, Json changes) => throw _na;
-  @override
-  Future<void> delete(String id) => throw _na;
-}
 
 class _PendingTax implements TaxService {
   const _PendingTax();

@@ -249,6 +249,114 @@ def debt_fixture() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Database-backed routes, run with their queries answered by sample rows.
+# ---------------------------------------------------------------------------
+
+def schedules_fixture() -> dict[str, Any]:
+    """Bills & recurring calendar (SchedulesService.occurrences)."""
+    import datetime
+    from app.routers import scheduled_cashflows as sched
+
+    def d(text: str | None):
+        return datetime.date.fromisoformat(text) if text else None
+
+    schedules = [
+        {"id": "s-rent", "description": "Rent", "flow_type": "EXPENSE", "source_type": "BILL", "frequency": "MONTHLY",
+         "interval_count": 1, "amount": 25000.0, "amount_is_estimate": False, "start_date": "2026-01-31", "end_date": None},
+        {"id": "s-salary", "description": "Salary", "flow_type": "INCOME", "source_type": "SALARY", "frequency": "MONTHLY",
+         "interval_count": 1, "amount": 85000.0, "amount_is_estimate": False, "start_date": "2025-04-01", "end_date": None},
+        {"id": "s-gym", "description": "gym", "flow_type": "EXPENSE", "source_type": "SUBSCRIPTION", "frequency": "WEEKLY",
+         "interval_count": 2, "amount": 300.0, "amount_is_estimate": True, "start_date": "2026-10-05", "end_date": "2026-12-20"},
+        {"id": "s-premium", "description": "Health premium", "flow_type": "EXPENSE", "source_type": "INSURANCE_PREMIUM",
+         "frequency": "YEARLY", "interval_count": 1, "amount": 18000.0, "amount_is_estimate": False, "start_date": "2024-02-29", "end_date": None},
+        {"id": "s-sip", "description": "SIP", "flow_type": "EXPENSE", "source_type": "OTHER", "frequency": "QUARTERLY",
+         "interval_count": 1, "amount": 15000.0, "amount_is_estimate": False, "start_date": "2026-08-15", "end_date": "2027-06-30"},
+        {"id": "s-bimonthly", "description": "Water bill", "flow_type": "EXPENSE", "source_type": "BILL", "frequency": "MONTHLY",
+         "interval_count": 2, "amount": 640.0, "amount_is_estimate": True, "start_date": "2026-09-30", "end_date": None},
+    ]
+    actuals = [
+        {"scheduled_cashflow_id": "s-rent", "scheduled_occurrence_date": "2026-10-31", "transaction_id": "t1",
+         "actual_date": "2026-11-01", "actual_amount": 25000.0},
+        {"scheduled_cashflow_id": "s-salary", "scheduled_occurrence_date": "2026-11-01", "transaction_id": "t2",
+         "actual_date": "2026-11-01", "actual_amount": 84500.0},
+    ]
+    shared = {"category_name": None, "account_name": "HDFC", "asset_name": None, "linked_record_name": None,
+              "liability_id": None, "debt_id": None, "insurance_policy_id": None}
+    rows = [{**shared, **s, "start_date": d(s["start_date"]), "end_date": d(s["end_date"])} for s in schedules]
+    actual_rows = [{**a, "scheduled_occurrence_date": d(a["scheduled_occurrence_date"]), "actual_date": d(a["actual_date"])} for a in actuals]
+    today = datetime.date(2026, 11, 23)
+
+    def fake_fetch_all(query: str, params: tuple):
+        if "FROM transactions" in query:
+            start, end = params[1], params[2]
+            return [a for a in actual_rows if start <= a["scheduled_occurrence_date"] <= end]
+        return sorted(rows, key=lambda r: r["description"])
+
+    original = (sched.fetch_all, sched._today)
+    sched.fetch_all, sched._today = fake_fetch_all, (lambda: today)
+    try:
+        from fastapi import HTTPException
+
+        ranges = [("2026-11-01", "2027-01-22"), ("2026-02-01", "2026-03-31"), ("2024-02-01", "2025-01-31"), (None, None),
+                  ("2024-01-01", "2025-03-31"), ("2026-12-01", "2026-11-01")]
+        cases = []
+        for s, e in ranges:
+            try:
+                cases.append({"start": s, "end": e, "output": _json_safe(sched.list_occurrences(start_date=d(s), end_date=d(e), user_id="u"))})
+            except HTTPException as error:
+                cases.append({"start": s, "end": e, "error": {"field": None, "message": error.detail}})
+        checks = []
+        for s in rows:
+            for text in ("2026-02-28", "2026-03-31", "2026-11-16", "2026-11-02", "2028-02-29", "2027-02-28", "2026-11-15", "2027-05-15", "2026-11-30"):
+                checks.append({"schedule": s["id"], "date": text, "is_occurrence": sched._is_occurrence(s, d(text))})
+    finally:
+        sched.fetch_all, sched._today = original
+    return {"_comment": HEADER, "service": "SchedulesService.occurrences", "today": today.isoformat(),
+            "schedules": schedules, "actuals": actuals, "cases": cases, "is_occurrence": checks}
+
+
+def wealth_fixture() -> dict[str, Any]:
+    """Wealth summary across asset classes (AssetsService.summary)."""
+    from app.routers import assets as assets_router
+
+    common = {"user_id": "local-user", "sub_type": None, "purchase_date": None, "notes": None,
+              "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z"}
+    holdings = [
+        {"id": "a1", "name": "Flat", "asset_class": "REAL_ESTATE", "invested_amount": 4500000.0, "current_value": 6200000.0,
+         "quantity": 1.0, "buy_price": 0.0, "current_price": 0.0, "meta_data": {}},
+        {"id": "a2", "name": "RELIANCE", "asset_class": "EQUITY", "invested_amount": 240000.0, "current_value": 286500.5,
+         "quantity": 100.0, "buy_price": 2400.0, "current_price": 2865.01, "meta_data": {"symbol": "RELIANCE"}},
+        {"id": "a3", "name": "Nifty index fund", "asset_class": "MUTUAL_FUND", "invested_amount": 150000.0, "current_value": 171234.56,
+         "quantity": 3521.1234, "buy_price": 0.0, "current_price": 0.0, "meta_data": {}},
+        {"id": "a4", "name": "TCS", "asset_class": "EQUITY", "invested_amount": 120000.0, "current_value": 98000.0,
+         "quantity": 30.0, "buy_price": 4000.0, "current_price": 3266.67, "meta_data": "{\"ticker\": \"TCS.NS\"}"},
+        {"id": "a5", "name": "Gold coins", "asset_class": "COMMODITY_GOLD", "invested_amount": 0.0, "current_value": 55000.0,
+         "quantity": 0.0, "buy_price": 0.0, "current_price": 0.0, "meta_data": None},
+    ]
+    holdings = [{**common, **h} for h in holdings]
+    accounts = [{"balance": 150000.25}, {"balance": 4999.75}]
+    debts = [{"current_outstanding": 380000.0, "monthly_emi": 12500.0}, {"current_outstanding": 25000.0, "monthly_emi": None}]
+
+    def fake_fetch_all(query: str, params: tuple):
+        if "FROM assets" in query:
+            return [dict(h) for h in holdings]
+        if "FROM accounts" in query:
+            return accounts
+        if "FROM debts" in query:
+            return debts
+        return []
+
+    original = assets_router.fetch_all
+    assets_router.fetch_all = fake_fetch_all
+    try:
+        output = assets_router.get_wealth_summary(user_id="local-user").model_dump(mode="json")
+    finally:
+        assets_router.fetch_all = original
+    return {"_comment": HEADER, "service": "AssetsService.summary", "holdings": holdings, "accounts": accounts,
+            "debts": debts, "output": output}
+
+
+# ---------------------------------------------------------------------------
 # Python's round() (pyRound in Dart)
 # ---------------------------------------------------------------------------
 
@@ -276,6 +384,8 @@ FIXTURES: dict[str, Callable[[], dict[str, Any]]] = {
     "tax.json": tax_fixture,
     "py_round.json": py_round_fixture,
     "debts.json": debt_fixture,
+    "schedules.json": schedules_fixture,
+    "wealth.json": wealth_fixture,
 }
 
 

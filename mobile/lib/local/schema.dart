@@ -13,7 +13,7 @@ import 'package:sqlite3/sqlite3.dart';
 ///  * Booleans are INTEGER 0/1.
 ///  * There is no users table or user_id column: the phone has one owner.
 ///    The single `profile` row replaces `users`.
-const List<String> migrations = [_v1, _v2, _v3];
+const List<String> migrations = [_v1, _v2, _v3, _v4];
 
 void migrate(Database db) {
   final current = db.select('PRAGMA user_version').first.values.first as int;
@@ -224,6 +224,52 @@ CREATE TABLE insurance_policies (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+''';
+
+/// v4: investment holdings and Bills & recurring (step 4c).
+const _v4 = '''
+CREATE TABLE assets (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  asset_class TEXT NOT NULL CHECK (asset_class IN ('EQUITY', 'MUTUAL_FUND', 'COMMODITY_GOLD', 'REAL_ESTATE', 'CASH_EQUIVALENT', 'FIXED_INCOME', 'CRYPTO', 'OTHER')),
+  sub_type TEXT,
+  invested_minor INTEGER NOT NULL DEFAULT 0,
+  current_value_minor INTEGER NOT NULL DEFAULT 0,
+  quantity REAL DEFAULT 1,
+  buy_price_minor INTEGER DEFAULT 0,
+  current_price_minor INTEGER DEFAULT 0,
+  purchase_date TEXT,
+  notes TEXT,
+  meta_data TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_assets_class ON assets(asset_class);
+
+-- Planned income and payments; recording one creates a transaction that
+-- points back here (transactions.scheduled_cashflow_id / _occurrence_date).
+CREATE TABLE scheduled_cashflows (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE RESTRICT,
+  category_id TEXT REFERENCES categories(id) ON DELETE SET NULL,
+  asset_id TEXT REFERENCES assets(id) ON DELETE SET NULL,
+  description TEXT NOT NULL,
+  flow_type TEXT NOT NULL CHECK (flow_type IN ('INCOME', 'EXPENSE')),
+  source_type TEXT NOT NULL DEFAULT 'OTHER' CHECK (source_type IN ('BILL', 'SUBSCRIPTION', 'EMI', 'INSURANCE_PREMIUM', 'SALARY', 'RENTAL_INCOME', 'DIVIDEND', 'INTEREST', 'OTHER')),
+  amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  amount_is_estimate INTEGER NOT NULL DEFAULT 0,
+  frequency TEXT NOT NULL CHECK (frequency IN ('WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY')),
+  interval_count INTEGER NOT NULL DEFAULT 1 CHECK (interval_count BETWEEN 1 AND 12),
+  start_date TEXT NOT NULL,
+  end_date TEXT,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  debt_id TEXT REFERENCES debts(id) ON DELETE CASCADE,
+  insurance_policy_id TEXT REFERENCES insurance_policies(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (end_date IS NULL OR end_date >= start_date)
+);
+CREATE INDEX idx_scheduled_active ON scheduled_cashflows(is_active, start_date);
 ''';
 
 /// Default categories, identical to the backend seed (same ids), so data
