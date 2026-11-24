@@ -9,10 +9,12 @@ import 'core/api_client.dart';
 import 'core/app_lock.dart';
 import 'core/app_state.dart';
 import 'core/theme.dart';
+import 'insights/insight_alerts.dart';
 import 'local/local_db.dart';
 import 'local/local_services.dart';
 import 'screens/auth_screen.dart';
 import 'screens/home_shell.dart';
+import 'screens/insights_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'services/remote/remote_services.dart';
 import 'services/services.dart';
@@ -53,6 +55,19 @@ Future<void> main() async {
   // Phone-only version: encrypted backups (file / Google Drive).
   final backupService = services.backup;
   final backup = backupService == null ? null : (BackupManager(backupService)..init());
+
+  // Phone-only version: alerts and reminders as phone notifications.
+  final insightsService = services.insights;
+  final alerts = insightsService == null
+      ? null
+      : (InsightAlerts(
+          insightsService,
+          hideAmounts: () => state.hideAmounts,
+          onTap: (target) {
+            final context = navigatorKey.currentContext;
+            if (context != null && state.status == AuthStatus.signedIn && !state.needsOnboarding) openInsightTarget(context, target);
+          },
+        )..init());
   runApp(MultiProvider(
     providers: [
       Provider<Services>.value(value: services),
@@ -61,6 +76,7 @@ Future<void> main() async {
       if (sms != null) ChangeNotifierProvider<SmsSync>.value(value: sms),
       if (notifications != null) ChangeNotifierProvider<NotificationSync>.value(value: notifications),
       if (backup != null) ChangeNotifierProvider<BackupManager>.value(value: backup),
+      if (alerts != null) ChangeNotifierProvider<InsightAlerts>.value(value: alerts),
     ],
     child: FinverseApp(lock: lock),
   ));

@@ -8,6 +8,7 @@ import '../widgets/common.dart';
 import '../widgets/transaction_tile.dart';
 import '../capture/sms_sync.dart';
 import 'essentials_screen.dart';
+import 'insights_screen.dart';
 import 'review_inbox_screen.dart';
 import 'home_shell.dart';
 import 'schedules_screen.dart';
@@ -62,7 +63,8 @@ class DashboardData {
   final List<Map<String, dynamic>> monthTransactions;
   final List<Map<String, dynamic>> occurrences;
   final Map<String, dynamic> health;
-  DashboardData(this.wealth, this.cashflow, this.goals, this.debts, this.insurance, this.monthTransactions, this.occurrences, this.health);
+  final List<Map<String, dynamic>> insights;
+  DashboardData(this.wealth, this.cashflow, this.goals, this.debts, this.insurance, this.monthTransactions, this.occurrences, this.health, this.insights);
 }
 
 class DashboardScreen extends StatefulWidget {
@@ -111,8 +113,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         end: now.add(const Duration(days: 7)),
       )),
       safe(s.essentials.healthCheck()),
+      if (s.insights != null) safeList(s.insights!.list()),
     ]);
-    return DashboardData(results[0], results[1], results[2], results[3], results[4], results[5], results[6], results[7]);
+    return DashboardData(results[0], results[1], results[2], results[3], results[4], results[5], results[6], results[7],
+        results.length > 8 ? results[8] as List<Map<String, dynamic>> : const []);
   }
 
   /// Overdue (this month) and not-yet-done items in the next 7 days.
@@ -160,6 +164,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               StatTile(label: 'Net savings', value: state.money.compact(net, hidden: state.hideAmounts), color: net >= 0 ? AppColors.income : AppColors.expense, icon: Icons.savings_outlined),
               StatTile(label: 'Savings rate', value: percent(savingsRate, digits: 0), icon: Icons.percent, subtitle: 'Target ${percent(state.user?['target_savings_rate'], digits: 0)}'),
             ]),
+            InsightsCard(insights: d.insights, onChanged: reload),
             if (d.monthTransactions.isNotEmpty) ...[
               SectionHeader('Top spending this month', trailing: TextButton(onPressed: () => widget.onNavigate(1), child: const Text('Breakdown'))),
               _TopSpending(transactions: d.monthTransactions, total: expense),

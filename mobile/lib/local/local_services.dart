@@ -18,6 +18,7 @@ import 'local_backup.dart';
 import 'local_capture.dart';
 import 'local_db.dart';
 import 'local_import.dart';
+import 'local_insights.dart';
 import 'local_money.dart';
 import 'local_planning.dart';
 import 'local_plans.dart';
@@ -53,6 +54,7 @@ Services localServices(LocalDb db, {TaxRules? taxRules, StatementPdfReader pdfRe
       ai: const _PendingAi(),
       capture: LocalCaptureService(db),
       backup: LocalBackupService(db),
+      insights: LocalInsightsService(db),
     );
 
 // ---------------------------------------------------------------------------

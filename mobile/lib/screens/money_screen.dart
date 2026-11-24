@@ -19,13 +19,17 @@ const accountTypes = {
 };
 
 class MoneyScreen extends StatelessWidget {
-  const MoneyScreen({super.key});
+  const MoneyScreen({super.key, this.initialTab = 0});
+
+  /// 0 Transactions, 1 Budgets, 2 Accounts.
+  final int initialTab;
 
   @override
   Widget build(BuildContext context) {
-    return const DefaultTabController(
+    return DefaultTabController(
       length: 3,
-      child: Scaffold(
+      initialIndex: initialTab,
+      child: const Scaffold(
         appBar: AppScaffoldBar(
           title: 'Money',
           bottom: TabBar(tabs: [Tab(text: 'Transactions'), Tab(text: 'Budgets'), Tab(text: 'Accounts')]),

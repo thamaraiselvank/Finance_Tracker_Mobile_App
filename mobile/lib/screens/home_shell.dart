@@ -2,9 +2,11 @@ import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
 import '../core/app_state.dart';
+import '../insights/insight_alerts.dart';
 import 'ai_advisor_screen.dart';
 import 'dashboard_screen.dart';
 import 'goals_screen.dart';
+import 'insights_screen.dart';
 import 'money_screen.dart';
 import 'more_screen.dart';
 import 'wealth_screen.dart';
@@ -19,6 +21,20 @@ class HomeShell extends StatefulWidget {
 
 class _HomeShellState extends State<HomeShell> {
   int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final alerts = context.read<InsightAlerts?>();
+      if (alerts == null) return;
+      // Opened by tapping a notification: go where it points.
+      final target = alerts.takeLaunchTarget();
+      if (target != null) openInsightTarget(context, target);
+      alerts.askOnce();
+    });
+  }
 
   void _goTo(int index) => setState(() => _index = index);
 

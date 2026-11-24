@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../config.dart';
 import '../core/app_state.dart';
+import '../insights/insight_alerts.dart';
 import '../widgets/common.dart';
 import 'ai_advisor_screen.dart';
 import 'assessment_screen.dart';
@@ -13,6 +14,7 @@ import 'debts_screen.dart';
 import 'essentials_screen.dart';
 import 'export_screen.dart';
 import 'import_screen.dart';
+import 'insights_screen.dart';
 import 'insurance_screen.dart';
 import 'learn_screen.dart';
 import 'profile_screen.dart';
@@ -55,6 +57,8 @@ class MoreScreen extends StatelessWidget {
               _item(context, Icons.inbox_outlined, 'Review inbox', 'Payments from bank SMS, UPI apps and screenshots', const ReviewInboxScreen()),
             if (context.services.capture != null)
               _item(context, Icons.auto_awesome_outlined, 'Auto-categorise rules', 'What Finverse learned from your choices', const CaptureRulesScreen()),
+            if (context.services.insights != null)
+              _item(context, Icons.insights_outlined, 'Insights', 'Budget alerts, unusual payments, bills due', const InsightsScreen()),
             _item(context, Icons.event_repeat, 'Bills & recurring', 'Rent, EMIs, subscriptions, salary', const SchedulesScreen()),
             _item(context, Icons.upload_file, 'Import', 'Bank statements & broker holdings', const ImportScreen()),
             _item(context, Icons.receipt_outlined, 'Income tax estimate', 'Old vs new regime (India)', const TaxScreen()),
@@ -79,6 +83,8 @@ class MoreScreen extends StatelessWidget {
               _item(context, Icons.backup_outlined, 'Backup & export', 'Google Drive, backup file, Excel / CSV / PDF', const BackupScreen())
             else
               _item(context, Icons.table_view_outlined, 'Export', 'Excel, CSV or PDF', const ExportScreen()),
+            if (context.watch<InsightAlerts?>() != null)
+              _item(context, Icons.notifications_outlined, 'Notifications', 'Alerts and reminders', const NotificationSettingsScreen()),
             ListTile(
               leading: const Icon(Icons.palette_outlined),
               title: const Text('Theme'),

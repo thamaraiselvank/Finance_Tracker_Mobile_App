@@ -268,6 +268,47 @@ abstract class BackupService {
   Future<Json> restore(String path, String password);
 }
 
+/// Smart insights and alerts (phone-only version), worked out on the phone
+/// from the user's own data with simple rules: no AI, nothing leaves the phone.
+///
+/// Each insight is a map with `key` (stable, includes its period, e.g.
+/// `budget-over:<category>:2026-11`), `kind` (budget, spending, unusual,
+/// bill, summary, goal, recurring), `severity` (alert, warning, info, good),
+/// `title`, `body`, `target` (where tapping it goes: budgets, transactions,
+/// bills, insurance, goals) and `notify` (worth a phone notification).
+abstract class InsightsService {
+  /// Current insights, most important first. Dismissed ones are left out.
+  /// With [hideAmounts], amounts are written as "₹ ••••".
+  Future<List<Json>> list({bool hideAmounts = false});
+
+  /// Hides an insight. It comes back only when its key changes (next month,
+  /// another payment...).
+  Future<void> dismiss(String key);
+
+  /// Phone notifications to schedule ahead (bills due, renewals, monthly
+  /// summary, check-in): `key`, `kind`, `at` (local time), `title`, `body`.
+  Future<List<Json>> reminders({bool hideAmounts = false});
+
+  /// `enabled` (all notifications) and `kinds` ({kind: bool}, see
+  /// notificationKinds) for phone notifications.
+  Future<Json> settings();
+  Future<void> updateSettings(Json changes);
+
+  /// Records that these insights were sent as notifications; returns the
+  /// ones that had not been sent before.
+  Future<List<String>> markNotified(List<String> keys);
+}
+
+/// Groups of phone notifications the user can switch on and off.
+const notificationKinds = {
+  'budget': 'Budget alerts',
+  'spending': 'Spending higher than usual',
+  'unusual': 'Unusual or double payments',
+  'bill': 'Bills, EMIs and renewals due',
+  'summary': 'Monthly summary',
+  'checkin': 'Reminder after 3 days away',
+};
+
 /// All services together, provided once at the top of the app.
 class Services {
   const Services({
@@ -288,6 +329,7 @@ class Services {
     required this.ai,
     this.capture,
     this.backup,
+    this.insights,
   });
 
   final AuthService auth;
@@ -311,4 +353,7 @@ class Services {
 
   /// Encrypted backup and restore. Null in the cloud version (data is on the server).
   final BackupService? backup;
+
+  /// Smart insights and alerts. Null in the cloud version.
+  final InsightsService? insights;
 }
