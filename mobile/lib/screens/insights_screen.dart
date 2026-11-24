@@ -10,6 +10,7 @@ import 'goals_screen.dart';
 import 'insurance_screen.dart';
 import 'money_screen.dart';
 import 'schedules_screen.dart';
+import 'wealth_screen.dart';
 
 /// Opens the screen an insight (or a notification) points to.
 Future<void> openInsightTarget(BuildContext context, String? target) {
@@ -19,13 +20,14 @@ Future<void> openInsightTarget(BuildContext context, String? target) {
     'bills' => const SchedulesScreen(),
     'insurance' => const InsuranceScreen(),
     'goals' => const GoalsScreen(),
+    'wealth' => const WealthScreen(),
     _ => null,
   };
   return Navigator.push(context, MaterialPageRoute(builder: (_) => screen ?? const InsightsScreen()));
 }
 
-/// Masks amounts in an insight's text when the user has hidden amounts.
-String _visible(BuildContext context, String text) {
+/// Masks amounts in ready-made text when the user has hidden amounts.
+String maskAmounts(BuildContext context, String text) {
   final state = context.watch<AppState>();
   if (!state.hideAmounts) return text;
   final symbol = state.money.symbol;
@@ -35,12 +37,13 @@ String _visible(BuildContext context, String text) {
 ({IconData icon, Color color}) _look(BuildContext context, Json insight) {
   final icon = switch (insight['kind']) {
     'budget' => Icons.account_balance_wallet_outlined,
-    'spending' => Icons.trending_up,
+    'spending' => insight['severity'] == 'good' ? Icons.trending_down : Icons.trending_up,
     'unusual' => Icons.gpp_maybe_outlined,
     'bill' => Icons.event_outlined,
     'goal' => Icons.flag_outlined,
     'recurring' => Icons.autorenew,
     'summary' => Icons.insights_outlined,
+    'wealth' => Icons.trending_up,
     _ => Icons.lightbulb_outline,
   };
   final color = switch (insight['severity']) {
@@ -67,8 +70,8 @@ class InsightTile extends StatelessWidget {
         foregroundColor: look.color,
         child: Icon(look.icon, size: 20),
       ),
-      title: Text(_visible(context, insight['title'] as String), style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text(_visible(context, insight['body'] as String)),
+      title: Text(maskAmounts(context, insight['title'] as String), style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(maskAmounts(context, insight['body'] as String)),
       isThreeLine: (insight['body'] as String).length > 60,
       onTap: () async {
         await openInsightTarget(context, insight['target'] as String?);

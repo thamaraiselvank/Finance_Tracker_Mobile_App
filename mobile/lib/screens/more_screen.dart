@@ -21,6 +21,7 @@ import 'profile_screen.dart';
 import 'review_inbox_screen.dart';
 import 'schedules_screen.dart';
 import 'tax_screen.dart';
+import 'trends_screen.dart';
 
 class MoreScreen extends StatelessWidget {
   const MoreScreen({super.key});
@@ -59,6 +60,8 @@ class MoreScreen extends StatelessWidget {
               _item(context, Icons.auto_awesome_outlined, 'Auto-categorise rules', 'What Finverse learned from your choices', const CaptureRulesScreen()),
             if (context.services.insights != null)
               _item(context, Icons.insights_outlined, 'Insights', 'Budget alerts, unusual payments, bills due', const InsightsScreen()),
+            if (context.services.insights != null)
+              _item(context, Icons.query_stats, 'Trends & comparisons', 'Month by month, categories, wealth growth', const TrendsScreen()),
             _item(context, Icons.event_repeat, 'Bills & recurring', 'Rent, EMIs, subscriptions, salary', const SchedulesScreen()),
             _item(context, Icons.upload_file, 'Import', 'Bank statements & broker holdings', const ImportScreen()),
             _item(context, Icons.receipt_outlined, 'Income tax estimate', 'Old vs new regime (India)', const TaxScreen()),
@@ -67,7 +70,8 @@ class MoreScreen extends StatelessWidget {
         const SectionHeader('Plan & protect'),
         Card(
           child: Column(children: [
-            _item(context, Icons.auto_awesome, 'AI advisor', 'Ask about your finances', const AiAdvisorScreen()),
+            // No AI chat in the phone-only version: nothing leaves the phone.
+            if (!AppConfig.isLocal) _item(context, Icons.auto_awesome, 'AI advisor', 'Ask about your finances', const AiAdvisorScreen()),
             _item(context, Icons.monitor_heart_outlined, 'Financial health', 'Emergency fund, cover, debt ratio', const EssentialsScreen()),
             _item(context, Icons.fact_check_outlined, 'Financial check-up', '15 questions, personalised next steps', const AssessmentScreen()),
             _item(context, Icons.credit_card_outlined, 'Debts & loans', 'Balances and payoff plans', const DebtsScreen()),

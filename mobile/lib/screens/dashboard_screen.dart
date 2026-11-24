@@ -9,6 +9,7 @@ import '../widgets/transaction_tile.dart';
 import '../capture/sms_sync.dart';
 import 'essentials_screen.dart';
 import 'insights_screen.dart';
+import 'trends_screen.dart';
 import 'review_inbox_screen.dart';
 import 'home_shell.dart';
 import 'schedules_screen.dart';
@@ -64,7 +65,10 @@ class DashboardData {
   final List<Map<String, dynamic>> occurrences;
   final Map<String, dynamic> health;
   final List<Map<String, dynamic>> insights;
-  DashboardData(this.wealth, this.cashflow, this.goals, this.debts, this.insurance, this.monthTransactions, this.occurrences, this.health, this.insights);
+
+  /// Comparisons (phone-only version; empty in the cloud version).
+  final Map<String, dynamic> trends;
+  DashboardData(this.wealth, this.cashflow, this.goals, this.debts, this.insurance, this.monthTransactions, this.occurrences, this.health, this.insights, this.trends);
 }
 
 class DashboardScreen extends StatefulWidget {
@@ -114,9 +118,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       )),
       safe(s.essentials.healthCheck()),
       if (s.insights != null) safeList(s.insights!.list()),
+      if (s.insights != null) safe(s.insights!.trends()),
     ]);
     return DashboardData(results[0], results[1], results[2], results[3], results[4], results[5], results[6], results[7],
-        results.length > 8 ? results[8] as List<Map<String, dynamic>> : const []);
+        results.length > 8 ? results[8] as List<Map<String, dynamic>> : const [], results.length > 9 ? results[9] as Map<String, dynamic> : const {});
   }
 
   /// Overdue (this month) and not-yet-done items in the next 7 days.
@@ -153,18 +158,38 @@ class _DashboardScreenState extends State<DashboardScreen> {
           final goalCurrent = toDouble(d.goals['total_current_amount']);
           final recent = (d.cashflow['recent_transactions'] as List? ?? []).cast<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
           final gaps = (d.insurance['critical_gaps'] as List? ?? []).map((e) => e.toString()).toList();
+          // This month so far against the same days of last month.
+          final compare = d.trends['compare'] as Map<String, dynamic>?;
+          final before = compare?['last'] as Map<String, dynamic>?;
+          final lastLabel = (d.trends['last_label'] as String?)?.substring(0, 3);
+          String? vs(String key, double now, {bool lowerIsGood = false}) {
+            if (before == null) return null;
+            final change = changeOf(now, toDouble(before[key]), lowerIsGood: lowerIsGood);
+            return change == null ? null : '${change.text} vs $lastLabel';
+          }
+          final lastRate = before != null && toDouble(before['income']) > 0 ? toDouble(before['saved']) / toDouble(before['income']) * 100 : null;
+          void openTrends() => Navigator.push(context, MaterialPageRoute(builder: (_) => const TrendsScreen())).then((_) => reload());
 
           return ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 96), children: [
             _CaptureBanner(onReturn: reload),
-            _NetWorthCard(wealth: d.wealth),
-            const SectionHeader('This month'),
+            _NetWorthCard(wealth: d.wealth, trends: d.trends),
+            SectionHeader('This month', trailing: d.trends.isEmpty ? null : TextButton(onPressed: openTrends, child: const Text('Compare'))),
             StatGrid(children: [
-              StatTile(label: 'Income', value: state.money.compact(income, hidden: state.hideAmounts), color: AppColors.income, icon: Icons.south_west),
-              StatTile(label: 'Expenses', value: state.money.compact(expense, hidden: state.hideAmounts), color: AppColors.expense, icon: Icons.north_east),
-              StatTile(label: 'Net savings', value: state.money.compact(net, hidden: state.hideAmounts), color: net >= 0 ? AppColors.income : AppColors.expense, icon: Icons.savings_outlined),
-              StatTile(label: 'Savings rate', value: percent(savingsRate, digits: 0), icon: Icons.percent, subtitle: 'Target ${percent(state.user?['target_savings_rate'], digits: 0)}'),
+              StatTile(label: 'Income', value: state.money.compact(income, hidden: state.hideAmounts), color: AppColors.income, icon: Icons.south_west, subtitle: vs('income', income)),
+              StatTile(label: 'Expenses', value: state.money.compact(expense, hidden: state.hideAmounts), color: AppColors.expense, icon: Icons.north_east, subtitle: vs('expense', expense, lowerIsGood: true)),
+              StatTile(label: 'Net savings', value: state.money.compact(net, hidden: state.hideAmounts), color: net >= 0 ? AppColors.income : AppColors.expense, icon: Icons.savings_outlined, subtitle: vs('saved', net)),
+              StatTile(
+                label: 'Savings rate',
+                value: percent(savingsRate, digits: 0),
+                icon: Icons.percent,
+                subtitle: [
+                  if (lastRate != null) '$lastLabel ${percent(lastRate, digits: 0)}',
+                  'target ${percent(state.user?['target_savings_rate'], digits: 0)}',
+                ].join(' · '),
+              ),
             ]),
             InsightsCard(insights: d.insights, onChanged: reload),
+            if (d.trends['months'] is List) _RecentMonths(months: (d.trends['months'] as List).cast<Map<String, dynamic>>(), onMore: openTrends),
             if (d.monthTransactions.isNotEmpty) ...[
               SectionHeader('Top spending this month', trailing: TextButton(onPressed: () => widget.onNavigate(1), child: const Text('Breakdown'))),
               _TopSpending(transactions: d.monthTransactions, total: expense),
@@ -299,9 +324,72 @@ class _CaptureBanner extends StatelessWidget {
   }
 }
 
+/// Earned / spent / saved for the last three full months, on the Home screen.
+class _RecentMonths extends StatelessWidget {
+  const _RecentMonths({required this.months, required this.onMore});
+  final List<Map<String, dynamic>> months;
+  final VoidCallback onMore;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final theme = Theme.of(context);
+    // Newest first: the month before it is the next item.
+    final past = months.where((m) => m['partial'] != true && (toDouble(m['income']) > 0 || toDouble(m['expense']) > 0)).toList().reversed.toList();
+    if (past.isEmpty) return const SizedBox.shrink();
+    String c(dynamic v) => state.money.compact(v, hidden: state.hideAmounts);
+    final muted = theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline);
+    return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      SectionHeader('Previous months', trailing: TextButton(onPressed: onMore, child: const Text('Trends'))),
+      Card(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          child: Column(children: [
+            Row(children: [
+              Expanded(flex: 3, child: Text('Month', style: muted)),
+              Expanded(flex: 3, child: Text('Earned', style: muted, textAlign: TextAlign.right)),
+              Expanded(flex: 3, child: Text('Spent', style: muted, textAlign: TextAlign.right)),
+              Expanded(flex: 3, child: Text('Saved', style: muted, textAlign: TextAlign.right)),
+            ]),
+            for (var i = 0; i < past.length && i < 3; i++)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 7),
+                child: Row(children: [
+                  Expanded(flex: 3, child: Text(past[i]['label'] as String, style: const TextStyle(fontWeight: FontWeight.w600))),
+                  Expanded(flex: 3, child: Text(c(past[i]['income']), textAlign: TextAlign.right)),
+                  Expanded(
+                    flex: 3,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                      Text(c(past[i]['expense'])),
+                      // Against the month before it.
+                      if (i + 1 < past.length)
+                        if (changeOf(toDouble(past[i]['expense']), toDouble(past[i + 1]['expense']), lowerIsGood: true) case final ch?)
+                          Text(ch.text, style: TextStyle(fontSize: 11, color: ch.color, fontWeight: FontWeight.w600)),
+                    ]),
+                  ),
+                  Expanded(
+                    flex: 3,
+                    child: Text(
+                      c(past[i]['saved']),
+                      textAlign: TextAlign.right,
+                      style: TextStyle(fontWeight: FontWeight.w700, color: toDouble(past[i]['saved']) >= 0 ? AppColors.income : AppColors.expense),
+                    ),
+                  ),
+                ]),
+              ),
+          ]),
+        ),
+      ),
+    ]);
+  }
+}
+
 class _NetWorthCard extends StatelessWidget {
-  const _NetWorthCard({required this.wealth});
+  const _NetWorthCard({required this.wealth, this.trends = const {}});
   final Map<String, dynamic> wealth;
+
+  /// For "▲ ₹12K since 12 Oct" (phone-only version).
+  final Map<String, dynamic> trends;
 
   @override
   Widget build(BuildContext context) {
@@ -329,9 +417,24 @@ class _NetWorthCard extends StatelessWidget {
             Expanded(child: _mini('Liabilities', state.money.compact(wealth['total_liabilities_outstanding'], hidden: state.hideAmounts))),
             Expanded(child: _mini('Returns', '${pnl >= 0 ? '+' : ''}${percent(wealth['total_assets_pnl_pct'])}')),
           ]),
+          if (_growth(state) case final growth?) ...[
+            const SizedBox(height: 12),
+            Text(growth, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13)),
+          ],
         ]),
       ),
     );
+  }
+
+  /// Change since about a month ago (or the first net-worth reading).
+  String? _growth(AppState state) {
+    final w = trends['wealth'] as Map<String, dynamic>?;
+    final now = w?['now'] as Map<String, dynamic>?;
+    final then = (w?['month_ago'] ?? w?['first']) as Map<String, dynamic>?;
+    if (now == null || then == null || then['date'] == now['date']) return null;
+    final change = toDouble(now['net_worth']) - toDouble(then['net_worth']);
+    final money = state.money.compact(change.abs(), hidden: state.hideAmounts);
+    return '${change >= 0 ? '▲' : '▼'} $money since ${shortDate(toDate(then['date']))}';
   }
 
   Widget _mini(String label, String value) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

@@ -11,7 +11,7 @@ import 'package:intl/intl.dart';
 import '../core/format.dart';
 import '../services/services.dart';
 import 'local_db.dart';
-import 'local_wealth.dart' show LocalSchedulesService;
+import 'local_wealth.dart' show LocalAssetsService, LocalSchedulesService;
 import 'py_round.dart';
 import 'validate.dart';
 
@@ -31,11 +31,40 @@ class LocalInsightsService implements InsightsService {
 
   @override
   Future<List<Json>> list({bool hideAmounts = false}) async {
+    await _recordWealth();
     final dismissed = _readMap(_dismissedKey);
     return [
       for (final i in InsightEngine(_db, _now(), hideAmounts: hideAmounts).insights())
         if (!dismissed.containsKey(i['key'])) i,
     ];
+  }
+
+  @override
+  Future<Json> trends() async {
+    await _recordWealth();
+    return InsightEngine(_db, _now()).trends();
+  }
+
+  /// Today's net-worth reading (replaced if the app is used again today).
+  Future<void> _recordWealth() async {
+    final w = await LocalAssetsService(_db).summary();
+    var invested = 0.0, holdings = 0.0;
+    for (final c in (w['asset_classes'] as List).cast<Json>()) {
+      invested += toDouble(c['total_invested']);
+      holdings += toDouble(c['total_current_value']);
+    }
+    _db.execute('''
+      INSERT INTO wealth_snapshots (date, net_worth_minor, assets_minor, liabilities_minor, invested_minor, holdings_minor)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (date) DO UPDATE SET net_worth_minor = excluded.net_worth_minor, assets_minor = excluded.assets_minor,
+        liabilities_minor = excluded.liabilities_minor, invested_minor = excluded.invested_minor, holdings_minor = excluded.holdings_minor''', [
+      dateOnly(_now()),
+      toMinor(toDouble(w['net_worth'])),
+      toMinor(toDouble(w['total_assets_current'])),
+      toMinor(toDouble(w['total_liabilities_outstanding'])),
+      toMinor(invested),
+      toMinor(holdings),
+    ]);
   }
 
   @override
@@ -146,6 +175,8 @@ class InsightEngine {
     final flagged = <String>{}; // categories already mentioned
     _budgets(out, flagged);
     _spending(out, flagged);
+    _comparedWithLastMonth(out, flagged);
+    _wealthChange(out);
     _unusual(out);
     _duplicates(out);
     _bills(out);
@@ -560,6 +591,268 @@ class InsightEngine {
       target: 'transactions',
     ));
   }
+
+  // ---- This month against last month ----------------------------------------
+
+  /// Income and spending between two dates (both included), in minor units.
+  ({int income, int expense}) _between(DateTime from, DateTime to) {
+    final r = _db.queryOne('''
+      SELECT COALESCE(SUM(CASE WHEN type = 'INCOME' THEN amount_minor END), 0) AS income,
+             COALESCE(SUM(CASE WHEN type = 'EXPENSE' THEN amount_minor END), 0) AS expense
+      FROM transactions WHERE status = 'CONFIRMED' AND date >= ? AND date <= ?''', [dateOnly(from), dateOnly(to)])!;
+    return (income: r['income'] as int, expense: r['expense'] as int);
+  }
+
+  Map<String?, int> _byCategoryBetween(DateTime from, DateTime to) => {
+        for (final r in _db.query('''
+          SELECT category_id, SUM(amount_minor) AS total FROM transactions
+          WHERE status = 'CONFIRMED' AND type = 'EXPENSE' AND date >= ? AND date <= ?
+          GROUP BY category_id''', [dateOnly(from), dateOnly(to)]))
+          r['category_id'] as String?: r['total'] as int,
+      };
+
+  DateTime get _lastMonth => DateTime(today.year, today.month - 1);
+
+  /// The same day of last month (or its last day, for the 31st...).
+  DateTime get _sameDayLastMonth {
+    final last = _lastMonth;
+    final days = _daysIn(last);
+    return DateTime(last.year, last.month, today.day < days ? today.day : days);
+  }
+
+  void _comparedWithLastMonth(List<Json> out, Set<String> flagged) {
+    if (today.day < 5) return;
+    final now = _between(_monthStart, today);
+    final before = _between(_lastMonth, _sameDayLastMonth);
+    if (before.income == 0 && before.expense == 0) return;
+    final month = _ym(today);
+    final byThen = 'by ${_day(_sameDayLastMonth)}';
+
+    final savedNow = now.income - now.expense, savedBefore = before.income - before.expense;
+    if (now.income > 0 && before.income > 0 && savedNow > 0 && savedNow - savedBefore >= 10 * _unit) {
+      out.add(_insight(
+        'saved-more:$month',
+        'spending',
+        'good',
+        'Saving more than last month',
+        '${_m(savedNow)} saved so far this month, against ${_m(savedBefore)} $byThen.',
+        target: 'transactions',
+      ));
+    }
+    final spentLess = before.expense - now.expense;
+    if (before.expense > 0 && now.expense * 100 <= before.expense * 85 && spentLess >= 10 * _unit && !out.any((i) => i['key'] == 'spend-high:$month')) {
+      out.add(_insight(
+        'spent-less:$month',
+        'spending',
+        'good',
+        'Spending down from last month',
+        '${_m(now.expense)} spent so far, against ${_m(before.expense)} $byThen. That is ${_m(spentLess)} (${spentLess * 100 ~/ before.expense}%) less.',
+        target: 'transactions',
+      ));
+    }
+
+    final names = {for (final r in _db.query("SELECT id, name FROM categories WHERE type = 'EXPENSE'")) r['id'] as String: r['name'] as String};
+    final thisMonth = _byCategoryBetween(_monthStart, today);
+    final lastMonth = _byCategoryBetween(_lastMonth, _sameDayLastMonth);
+    (String, int, int)? best;
+    for (final e in lastMonth.entries) {
+      final id = e.key;
+      if (id == null || flagged.contains(id) || !names.containsKey(id)) continue;
+      final nowSpent = thisMonth[id] ?? 0;
+      final drop = e.value - nowSpent;
+      if (nowSpent * 10 <= e.value * 6 && drop >= 10 * _unit && (best == null || drop > best.$2 - best.$3)) best = (id, e.value, nowSpent);
+    }
+    if (best != null) {
+      final (id, was, isNow) = best;
+      out.add(_insight(
+        'cat-down:$id:$month',
+        'spending',
+        'good',
+        'Less on ${names[id]} this month',
+        '${_m(isNow)} so far, against ${_m(was)} $byThen. ${_m(was - isNow)} less.',
+        target: 'transactions',
+      ));
+    }
+  }
+
+  // ---- Net worth over time --------------------------------------------------
+
+  Row? _snapshot(String sql, [List<Object?> params = const []]) => _db.queryOne('SELECT * FROM wealth_snapshots $sql LIMIT 1', params);
+
+  void _wealthChange(List<Json> out) {
+    final now = _snapshot('WHERE date <= ? ORDER BY date DESC', [dateOnly(today)]);
+    final then = _snapshot('WHERE date <= ? ORDER BY date DESC', [dateOnly(today.subtract(const Duration(days: 28)))]);
+    if (now == null || then == null) return;
+    final from = DateTime.parse(then['date'] as String);
+    final days = today.difference(from).inDays;
+    final a = then['net_worth_minor'] as int, b = now['net_worth_minor'] as int;
+    if ((b - a).abs() < 10 * _unit) return;
+    out.add(_insight(
+      'networth:${_ym(today)}',
+      'wealth',
+      b > a ? 'good' : 'info',
+      b > a ? 'Net worth up ${_m(b - a)}' : 'Net worth down ${_m(a - b)}',
+      'From ${_m(a)} on ${_day(from)} to ${_m(b)} today ($days days).',
+      target: 'wealth',
+    ));
+  }
+
+  // ---- Numbers for the comparison screens ----------------------------------
+
+  static double _amount(int minor) => fromMinor(minor);
+
+  Json _totalsJson(({int income, int expense}) t) =>
+      {'income': _amount(t.income), 'expense': _amount(t.expense), 'saved': _amount(t.income - t.expense)};
+
+  Json trends() {
+    final lastMonth = _lastMonth;
+    final lastMonthEnd = DateTime(lastMonth.year, lastMonth.month + 1, 0);
+
+    // Last 6 months, oldest first; this month is "so far".
+    final months = <Json>[];
+    for (var i = 5; i >= 0; i--) {
+      final m = DateTime(today.year, today.month - i);
+      final t = _between(m, i == 0 ? today : DateTime(m.year, m.month + 1, 0));
+      months.add({'month': _ym(m), 'label': DateFormat('MMM').format(m), 'partial': i == 0, ..._totalsJson(t)});
+    }
+
+    // Categories: this month so far, last month by the same day, all of last month.
+    final thisMonth = _byCategoryBetween(_monthStart, today);
+    final sameDays = _byCategoryBetween(lastMonth, _sameDayLastMonth);
+    final fullLast = _byCategoryBetween(lastMonth, lastMonthEnd);
+    final cats = {
+      for (final r in _db.query("SELECT id, name, color FROM categories WHERE type = 'EXPENSE'")) r['id'] as String: r,
+    };
+    final categories = [
+      for (final id in {...thisMonth.keys, ...fullLast.keys})
+        <String, dynamic>{
+          'id': id,
+          'name': id == null ? 'Uncategorised' : (cats[id]?['name'] ?? 'Other'),
+          'color': id == null ? null : cats[id]?['color'],
+          'this': _amount(thisMonth[id] ?? 0),
+          'last_same': _amount(sameDays[id] ?? 0),
+          'last_full': _amount(fullLast[id] ?? 0),
+        },
+    ]..sort((a, b) {
+        final byThis = (b['this'] as double).compareTo(a['this'] as double);
+        return byThis != 0 ? byThis : (b['last_full'] as double).compareTo(a['last_full'] as double);
+      });
+
+    // Since the first record.
+    final first = _db.queryOne("SELECT MIN(date) AS d FROM transactions WHERE status = 'CONFIRMED'")?['d'] as String?;
+    Json? since;
+    if (first != null) {
+      final from = DateTime.parse(first);
+      final t = _between(from, today);
+      final monthsCount = (today.year - from.year) * 12 + today.month - from.month + 1;
+      since = {
+        'first_date': first,
+        'days': today.difference(from).inDays + 1,
+        'months': monthsCount,
+        ..._totalsJson(t),
+        'avg_month_expense': _amount(t.expense ~/ monthsCount),
+        'avg_month_income': _amount(t.income ~/ monthsCount),
+      };
+    }
+
+    // Net worth: first reading, about a month ago, and now.
+    Json? reading(Row? r) => r == null
+        ? null
+        : {
+            'date': r['date'],
+            'net_worth': _amount(r['net_worth_minor'] as int),
+            'assets': _amount(r['assets_minor'] as int),
+            'liabilities': _amount(r['liabilities_minor'] as int),
+            'invested': _amount(r['invested_minor'] as int),
+            'holdings': _amount(r['holdings_minor'] as int),
+          };
+
+    return {
+      'today': dateOnly(today),
+      'this_label': _monthName(today),
+      'last_label': _monthName(lastMonth),
+      'same_day_last_month': dateOnly(_sameDayLastMonth),
+      'compare': {
+        'this': _totalsJson(_between(_monthStart, today)),
+        'last': _totalsJson(_between(lastMonth, _sameDayLastMonth)),
+        'last_full': _totalsJson(_between(lastMonth, lastMonthEnd)),
+      },
+      'months': months,
+      'categories': categories,
+      'since': since,
+      'wealth': {
+        'first': reading(_snapshot('ORDER BY date ASC')),
+        'month_ago': reading(_snapshot('WHERE date <= ? ORDER BY date DESC', [dateOnly(today.subtract(const Duration(days: 30)))])),
+        'now': reading(_snapshot('WHERE date <= ? ORDER BY date DESC', [dateOnly(today)])),
+      },
+      'highlights': _highlights(lastMonth, lastMonthEnd),
+    };
+  }
+
+  /// Plain facts about this month so far, each {kind, title, value, note}.
+  List<Json> _highlights(DateTime lastMonth, DateTime lastMonthEnd) {
+    final out = <Json>[];
+    final from = dateOnly(_monthStart), to = dateOnly(today);
+    final spent = _between(_monthStart, today).expense;
+    final lastSpent = _between(lastMonth, lastMonthEnd).expense;
+    if (spent > 0 || lastSpent > 0) {
+      out.add({
+        'kind': 'daily',
+        'title': 'Average spend per day',
+        'value': _m(spent ~/ today.day),
+        'note': lastSpent > 0 ? '${_m(lastSpent ~/ _daysIn(lastMonth))} a day in ${_monthName(lastMonth)}' : null,
+      });
+    }
+    final biggest = _db.queryOne('''
+      SELECT COALESCE(merchant, description) AS name, amount_minor, date FROM transactions
+      WHERE status = 'CONFIRMED' AND type = 'EXPENSE' AND date >= ? AND date <= ? ORDER BY amount_minor DESC LIMIT 1''', [from, to]);
+    if (biggest != null) {
+      out.add({
+        'kind': 'biggest',
+        'title': 'Biggest payment',
+        'value': _m(biggest['amount_minor'] as int),
+        'note': '${biggest['name']} · ${_day(DateTime.parse(biggest['date'] as String))}',
+      });
+    }
+    final busiest = _db.queryOne('''
+      SELECT date, SUM(amount_minor) AS total, COUNT(*) AS n FROM transactions
+      WHERE status = 'CONFIRMED' AND type = 'EXPENSE' AND date >= ? AND date <= ? GROUP BY date ORDER BY total DESC LIMIT 1''', [from, to]);
+    if (busiest != null && (busiest['n'] as int) > 1) {
+      out.add({
+        'kind': 'busiest',
+        'title': 'Busiest spending day',
+        'value': _m(busiest['total'] as int),
+        'note': '${DateFormat('EEEE, d MMM').format(DateTime.parse(busiest['date'] as String))} · ${busiest['n']} payments',
+      });
+    }
+    final payee = _db.queryOne('''
+      SELECT MAX(COALESCE(merchant, description)) AS name, COUNT(*) AS n, SUM(amount_minor) AS total FROM transactions
+      WHERE status = 'CONFIRMED' AND type = 'EXPENSE' AND date >= ? AND date <= ?
+      GROUP BY COALESCE(merchant_key, lower(trim(COALESCE(merchant, description)))) HAVING COUNT(*) > 1
+      ORDER BY n DESC, total DESC LIMIT 1''', [from, to]);
+    if (payee != null) {
+      out.add({
+        'kind': 'payee',
+        'title': 'Paid most often',
+        'value': '${payee['name']}',
+        'note': '${payee['n']} times · ${_m(payee['total'] as int)}',
+      });
+    }
+    final count = _db.queryOne('''
+      SELECT COUNT(DISTINCT date) AS days, COUNT(*) AS n FROM transactions
+      WHERE status = 'CONFIRMED' AND type = 'EXPENSE' AND date >= ? AND date <= ?''', [from, to])!;
+    if ((count['n'] as int) > 0) {
+      final noSpend = today.day - (count['days'] as int);
+      out.add({
+        'kind': 'count',
+        'title': 'Payments this month',
+        'value': '${count['n']}',
+        'note': noSpend > 0 ? '$noSpend day${noSpend == 1 ? '' : 's'} with no spending' : 'Spent something every day',
+      });
+    }
+    return out;
+  }
+
 
   // ---- Reminders to schedule as phone notifications -------------------------
 

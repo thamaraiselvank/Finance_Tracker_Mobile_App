@@ -294,6 +294,14 @@ abstract class InsightsService {
   Future<Json> settings();
   Future<void> updateSettings(Json changes);
 
+  /// Numbers for comparisons, as plain amounts: `compare` (this month so far
+  /// against the same days last month), `months` (last 6), `categories`
+  /// (this month so far, last month by the same day, all of last month),
+  /// `since` (totals since the first record), `wealth` (net worth readings
+  /// then and now, invested and current value of holdings) and
+  /// `highlights` (ready-made lines). Also takes today's net-worth reading.
+  Future<Json> trends();
+
   /// Records that these insights were sent as notifications; returns the
   /// ones that had not been sent before.
   Future<List<String>> markNotified(List<String> keys);

@@ -15,7 +15,7 @@ import '../capture/rules.dart';
 ///  * Booleans are INTEGER 0/1.
 ///  * There is no users table or user_id column: the phone has one owner.
 ///    The single `profile` row replaces `users`.
-const List<String> migrations = [_v1, _v2, _v3, _v4, _v5];
+const List<String> migrations = [_v1, _v2, _v3, _v4, _v5, _v6];
 
 void migrate(Database db) {
   final current = db.select('PRAGMA user_version').first.values.first as int;
@@ -329,6 +329,19 @@ INSERT OR IGNORE INTO categories (id, name, type, icon, color, is_system, create
   ('00000000-0000-0000-0000-000000000032', 'Credit card bill payment', 'TRANSFER', 'CreditCard', '#0EA5E9', 1, '2026-11-23T00:00:00.000Z'),
   ('00000000-0000-0000-0000-000000000033', 'Wallet top-up', 'TRANSFER', 'Wallet', '#0EA5E9', 1, '2026-11-23T00:00:00.000Z'),
   ('00000000-0000-0000-0000-000000000034', 'Cash withdrawal', 'TRANSFER', 'Banknote', '#0EA5E9', 1, '2026-11-23T00:00:00.000Z');
+''';
+
+/// v6: one net-worth reading per day (taken when the app is used), so the
+/// app can show how wealth changed over time ("₹4.2L on 12 Oct → ₹4.6L").
+const _v6 = '''
+CREATE TABLE wealth_snapshots (
+  date TEXT PRIMARY KEY,
+  net_worth_minor INTEGER NOT NULL,
+  assets_minor INTEGER NOT NULL,
+  liabilities_minor INTEGER NOT NULL,
+  invested_minor INTEGER NOT NULL,
+  holdings_minor INTEGER NOT NULL
+);
 ''';
 
 /// Fills the v5 match columns for payments captured before v5.

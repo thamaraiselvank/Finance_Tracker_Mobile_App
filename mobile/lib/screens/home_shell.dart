@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../config.dart';
 import '../core/app_state.dart';
 import '../insights/insight_alerts.dart';
 import 'ai_advisor_screen.dart';
@@ -49,7 +50,9 @@ class _HomeShellState extends State<HomeShell> {
     ];
     return Scaffold(
       body: IndexedStack(index: _index, children: pages),
-      floatingActionButton: _index == 0
+      // The AI advisor is only in the cloud version (the phone-only version
+      // sends nothing anywhere); insights are on the Home screen instead.
+      floatingActionButton: _index == 0 && !AppConfig.isLocal
           ? FloatingActionButton(
               tooltip: 'AI advisor',
               onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AiAdvisorScreen())),

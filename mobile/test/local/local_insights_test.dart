@@ -207,6 +207,64 @@ void main() {
     });
   });
 
+  group('this month against last month', () {
+    test('saving more, spending down and a category down', () {
+      tx('2026-10-01', 80000, type: 'INCOME', category: salary, description: 'Salary');
+      tx('2026-10-05', 20000);
+      tx('2026-10-10', 9000, category: shopping);
+      tx('2026-11-01', 80000, type: 'INCOME', category: salary, description: 'Salary');
+      tx('2026-11-05', 15000); // 75% of last month: not called out
+      tx('2026-11-10', 2000, category: shopping);
+      expect(byKey('saved-more:2026-11')!['body'], '₹63,000 saved so far this month, against ₹51,000 by 24 Oct.');
+      expect(byKey('spent-less:2026-11')!['body'], contains('₹12,000 (41%) less'));
+      final down = byKey('cat-down:')!;
+      expect(down['title'], 'Less on Shopping & Lifestyle this month');
+      expect(down['severity'], 'good');
+    });
+
+    test('trends: same days, months, categories, since the start, highlights', () async {
+      tx('2026-09-15', 5000);
+      tx('2026-10-01', 80000, type: 'INCOME', category: salary, description: 'Salary');
+      tx('2026-10-20', 10000);
+      tx('2026-10-28', 4000, category: shopping); // after 24 Oct: only in the full month
+      tx('2026-11-02', 3000, description: 'Swiggy', merchantKey: 'swiggy');
+      tx('2026-11-02', 4500, description: 'Swiggy', merchantKey: 'swiggy');
+      tx('2026-11-20', 7000, category: shopping, description: 'Myntra');
+      final t = await LocalInsightsService(db, now: () => now).trends();
+      final c = t['compare'] as Map;
+      expect(c['this'], {'income': 0.0, 'expense': 14500.0, 'saved': -14500.0});
+      expect(c['last'], {'income': 80000.0, 'expense': 10000.0, 'saved': 70000.0});
+      expect((c['last_full'] as Map)['expense'], 14000.0);
+      final months = (t['months'] as List).cast<Map>();
+      expect(months.map((m) => m['label']), ['Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov']);
+      expect(months.last['partial'], isTrue);
+      expect(months[3]['expense'], 5000.0);
+      final shop = (t['categories'] as List).cast<Map>().firstWhere((x) => x['id'] == shopping);
+      expect([shop['this'], shop['last_same'], shop['last_full']], [7000.0, 0.0, 4000.0]);
+      final since = t['since'] as Map;
+      expect(since['first_date'], '2026-09-15');
+      expect(since['days'], 71);
+      expect(since['months'], 3);
+      expect(since['expense'], 33500.0);
+      final highlights = {for (final h in (t['highlights'] as List).cast<Map>()) h['kind']: h};
+      expect(highlights['biggest']!['value'], '₹7,000');
+      expect(highlights['busiest']!['note'], 'Monday, 2 Nov · 2 payments');
+      expect(highlights['payee']!['value'], 'Swiggy');
+      expect(highlights['count']!['note'], '22 days with no spending');
+      // Today's net-worth reading was taken.
+      expect((t['wealth'] as Map)['now'], isNotNull);
+    });
+
+    test('net worth change over a month, from the daily readings', () async {
+      db.execute("INSERT INTO wealth_snapshots VALUES ('2026-10-20', 40000000, 45000000, 5000000, 0, 0)");
+      db.execute("UPDATE accounts SET balance_minor = 42500000");
+      await LocalInsightsService(db, now: () => now).list(); // takes today's reading
+      final i = byKey('networth:2026-11')!;
+      expect(i['title'], 'Net worth up ₹25,000');
+      expect(i['body'], 'From ₹4,00,000 on 20 Oct to ₹4,25,000 today (35 days).');
+    });
+  });
+
   test('a payment made every month suggests adding it to bills', () {
     for (final m in ['08', '09', '10']) {
       tx('2026-$m-05', 649, description: 'NETFLIX', source: 'SMS', merchantKey: 'netflix', category: '00000000-0000-0000-0000-000000000016');

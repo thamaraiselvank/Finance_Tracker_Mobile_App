@@ -75,14 +75,16 @@ class BackupScreen extends StatelessWidget {
           // ---- password -------------------------------------------------------
           const SectionHeader('Backup password'),
           Card(
-            child: ListTile(
-              leading: const Icon(Icons.password),
-              title: Text(m.hasPassword ? 'Saved on this phone' : 'Not set yet'),
-              subtitle: const Text('Backups are locked with this password. You need it to restore on a new phone.'),
-              trailing: TextButton(
-                onPressed: m.busy ? null : () => showPasswordSetup(context, change: m.hasPassword),
-                child: Text(m.hasPassword ? 'Change' : 'Set'),
-              ),
+            child: _ActionTile(
+              icon: Icons.password,
+              title: m.hasPassword ? 'Saved on this phone' : 'Not set yet',
+              subtitle: 'Backups are locked with this password. You need it to restore on a new phone.',
+              actions: [
+                FilledButton.tonal(
+                  onPressed: m.busy ? null : () => showPasswordSetup(context, change: m.hasPassword),
+                  child: Text(m.hasPassword ? 'Change password' : 'Set password'),
+                ),
+              ],
             ),
           ),
 
@@ -101,62 +103,73 @@ class BackupScreen extends StatelessWidget {
                               : 'Last Drive backup ${_when.format(m.lastDriveBackupAt!)} · keeps the newest ${DriveBackupStore.keep}',
                         ),
                       ),
-                      ListTile(
-                        leading: const Icon(Icons.schedule),
-                        title: const Text('Automatic backup'),
-                        subtitle: const Text('When you open the app and one is due'),
-                        trailing: SegmentedButton<AutoBackup>(
-                          showSelectedIcon: false,
-                          segments: [for (final a in AutoBackup.values) ButtonSegment(value: a, label: Text(a.label))],
-                          selected: {m.auto},
-                          onSelectionChanged: (s) async {
-                            if (s.first != AutoBackup.off && !await needPassword()) return;
-                            await m.setAuto(s.first);
-                          },
-                        ),
-                      ),
-                      OverflowBar(
-                        alignment: MainAxisAlignment.end,
-                        spacing: 8,
-                        children: [
-                          TextButton(
-                            onPressed: m.busy
-                                ? null
-                                : () async {
-                                    final ok = await confirmDialog(
-                                      context,
-                                      title: 'Disconnect Google Drive?',
-                                      message: 'Backups already in Drive stay there. Automatic backup will stop.',
-                                      confirmLabel: 'Disconnect',
-                                    );
-                                    if (ok) await m.disconnectDrive();
-                                  },
-                            child: const Text('Disconnect'),
+                      _ActionTile(
+                        icon: Icons.schedule,
+                        title: 'Automatic backup',
+                        subtitle: 'When you open the app and one is due',
+                        actions: [
+                          SizedBox(
+                            width: double.infinity,
+                            child: SegmentedButton<AutoBackup>(
+                              showSelectedIcon: false,
+                              segments: [for (final a in AutoBackup.values) ButtonSegment(value: a, label: Text(a.label))],
+                              selected: {m.auto},
+                              onSelectionChanged: (s) async {
+                                if (s.first != AutoBackup.off && !await needPassword()) return;
+                                await m.setAuto(s.first);
+                              },
+                            ),
                           ),
-                          FilledButton.icon(
-                            onPressed: m.busy
-                                ? null
-                                : () async {
-                                    if (!await needPassword()) return;
-                                    if (context.mounted) await _run(context, m.backupToDrive, done: 'Backed up to Google Drive.');
-                                  },
-                            icon: const Icon(Icons.cloud_upload_outlined),
-                            label: const Text('Back up now'),
-                          ),
-                          const SizedBox(width: 8),
                         ],
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
+                        child: Wrap(
+                          alignment: WrapAlignment.end,
+                          spacing: 8,
+                          runSpacing: 4,
+                          children: [
+                            TextButton(
+                              onPressed: m.busy
+                                  ? null
+                                  : () async {
+                                      final ok = await confirmDialog(
+                                        context,
+                                        title: 'Disconnect Google Drive?',
+                                        message: 'Backups already in Drive stay there. Automatic backup will stop.',
+                                        confirmLabel: 'Disconnect',
+                                      );
+                                      if (ok) await m.disconnectDrive();
+                                    },
+                              child: const Text('Disconnect'),
+                            ),
+                            FilledButton.icon(
+                              onPressed: m.busy
+                                  ? null
+                                  : () async {
+                                      if (!await needPassword()) return;
+                                      if (context.mounted) await _run(context, m.backupToDrive, done: 'Backed up to Google Drive.');
+                                    },
+                              icon: const Icon(Icons.cloud_upload_outlined),
+                              label: const Text('Back up now'),
+                            ),
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 8),
                     ],
                   )
-                : ListTile(
-                    leading: const Icon(Icons.add_to_drive),
-                    title: const Text('Back up to your Google Drive'),
-                    subtitle: const Text('Saved in a hidden Finverse folder. Google only stores the locked file and cannot read it.'),
-                    trailing: FilledButton(
-                      onPressed: m.busy ? null : () => _run(context, m.connectDrive, done: 'Google Drive connected.'),
-                      child: const Text('Connect'),
-                    ),
+                : _ActionTile(
+                    icon: Icons.add_to_drive,
+                    title: 'Back up to your Google Drive',
+                    subtitle: 'Saved in a hidden Finverse folder. Google only stores the locked file and cannot read it.',
+                    actions: [
+                      FilledButton.icon(
+                        onPressed: m.busy ? null : () => _run(context, m.connectDrive, done: 'Google Drive connected.'),
+                        icon: const Icon(Icons.link),
+                        label: const Text('Connect Google Drive'),
+                      ),
+                    ],
                   ),
           ),
 
@@ -565,6 +578,40 @@ class _RestoreConfirmDialog extends StatelessWidget {
           child: const Text('Restore'),
         ),
       ],
+    );
+  }
+}
+
+/// Icon, title and explanation, with the buttons underneath (not squeezed in
+/// beside the text, which breaks on narrow phones and with large fonts).
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({required this.icon, required this.title, required this.subtitle, required this.actions});
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final List<Widget> actions;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(padding: const EdgeInsets.only(top: 2), child: Icon(icon, color: theme.colorScheme.onSurfaceVariant)),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(title, style: theme.textTheme.titleMedium),
+            const SizedBox(height: 2),
+            Text(subtitle, style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(alignment: WrapAlignment.end, spacing: 8, runSpacing: 8, children: actions),
+            ),
+          ]),
+        ),
+      ]),
     );
   }
 }
