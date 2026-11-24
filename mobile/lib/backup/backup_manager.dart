@@ -49,6 +49,9 @@ class BackupManager extends ChangeNotifier with WidgetsBindingObserver {
   static const _kLastPlace = 'finverse_backup_last_place';
   static const _kLastDriveAt = 'finverse_backup_last_drive_at';
 
+  /// Automatic backup is a Pro feature; set by the app at start-up.
+  bool Function() autoAllowed = () => true;
+
   bool hasPassword = false;
   AutoBackup auto = AutoBackup.off;
   bool driveConnected = false;
@@ -227,7 +230,7 @@ class BackupManager extends ChangeNotifier with WidgetsBindingObserver {
   /// Runs an automatic Drive backup if one is due. Never asks the user anything.
   Future<void> runAutoIfDue() async {
     final every = auto.every;
-    if (every == null || !driveConnected || !hasPassword || busy) return;
+    if (every == null || !autoAllowed() || !driveConnected || !hasPassword || busy) return;
     final last = lastDriveBackupAt;
     if (last != null && DateTime.now().difference(last) < every) return;
     try {

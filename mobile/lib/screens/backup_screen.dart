@@ -7,6 +7,7 @@ import '../backup/backup_manager.dart';
 import '../backup/drive_store.dart';
 import '../capture/sms_sync.dart';
 import '../core/app_state.dart';
+import '../core/pro.dart';
 import '../widgets/common.dart';
 import 'export_screen.dart';
 
@@ -105,7 +106,7 @@ class BackupScreen extends StatelessWidget {
                       ),
                       _ActionTile(
                         icon: Icons.schedule,
-                        title: 'Automatic backup',
+                        title: context.isPro ? 'Automatic backup' : 'Automatic backup (Pro)',
                         subtitle: 'When you open the app and one is due',
                         actions: [
                           SizedBox(
@@ -115,6 +116,10 @@ class BackupScreen extends StatelessWidget {
                               segments: [for (final a in AutoBackup.values) ButtonSegment(value: a, label: Text(a.label))],
                               selected: {m.auto},
                               onSelectionChanged: (s) async {
+                                if (s.first != AutoBackup.off && !context.isProNow) {
+                                  await openUpgrade(context, reason: 'Automatic backup is in Finverse Pro. Backing up yourself (Drive or file) stays free.');
+                                  return;
+                                }
                                 if (s.first != AutoBackup.off && !await needPassword()) return;
                                 await m.setAuto(s.first);
                               },

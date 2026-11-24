@@ -225,6 +225,11 @@ abstract class CaptureService {
   Future<void> deleteRule(String id);
   Future<int> pendingCount();
 
+  /// Captured payments (SMS, UPI notification, screenshot) dated this
+  /// calendar month that were added to Money. The free version allows a
+  /// fixed number a month.
+  Future<int> addedThisMonth();
+
   /// Changes a pending transaction without confirming it (category, account,
   /// amount, type, description, date).
   Future<void> updatePending(String id, Json changes);

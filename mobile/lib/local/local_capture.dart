@@ -151,6 +151,16 @@ class LocalCaptureService implements CaptureService {
       _db.queryOne("SELECT count(*) AS n FROM transactions WHERE status = 'PENDING'")!['n'] as int;
 
   @override
+  Future<int> addedThisMonth() async {
+    final now = DateTime.now();
+    final month = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}';
+    return _db.queryOne(
+      "SELECT count(*) AS n FROM transactions WHERE status = 'CONFIRMED' AND source IN ('SMS', 'UPI_NOTIFICATION', 'SHARE') AND substr(date, 1, 7) = ?",
+      [month],
+    )!['n'] as int;
+  }
+
+  @override
   Future<void> updatePending(String id, Json changes) async => _db.transaction(() => _applyEdits(_pendingRow(id), changes));
 
   @override

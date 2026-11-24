@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../core/app_state.dart';
 import '../core/format.dart';
+import '../core/pro.dart';
 import '../core/theme.dart';
 import '../services/services.dart';
 import '../widgets/common.dart';
@@ -208,6 +209,9 @@ List<_CalcDef> _calculators(Map<String, dynamic>? user) => [
 class CalculatorsScreen extends StatelessWidget {
   const CalculatorsScreen({super.key});
 
+  /// SIP, lumpsum and EMI are free; the rest are Pro.
+  static bool _isPro(CalculatorKind kind) => kind == CalculatorKind.cagr || kind == CalculatorKind.fire;
+
   @override
   Widget build(BuildContext context) {
     final calcs = _calculators(context.read<AppState>().user);
@@ -227,11 +231,16 @@ class CalculatorsScreen extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                     subtitle: Text(c.subtitle),
-                    trailing: const Icon(Icons.chevron_right),
+                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                      if (_isPro(c.kind)) const ProBadge(),
+                      const Icon(Icons.chevron_right),
+                    ]),
                     onTap: () => Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => _CalculatorPage(def: c),
+                        builder: (_) => _isPro(c.kind)
+                            ? ProGate(feature: ProFeature.calculators, child: _CalculatorPage(def: c))
+                            : _CalculatorPage(def: c),
                       ),
                     ),
                   ),

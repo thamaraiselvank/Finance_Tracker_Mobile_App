@@ -1,12 +1,13 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../capture/sms_sync.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
+import '../core/pro.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
 import '../widgets/transaction_tile.dart';
-import '../capture/sms_sync.dart';
 import 'essentials_screen.dart';
 import 'insights_screen.dart';
 import 'trends_screen.dart';
@@ -168,7 +169,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             return change == null ? null : '${change.text} vs $lastLabel';
           }
           final lastRate = before != null && toDouble(before['income']) > 0 ? toDouble(before['saved']) / toDouble(before['income']) * 100 : null;
-          void openTrends() => Navigator.push(context, MaterialPageRoute(builder: (_) => const TrendsScreen())).then((_) => reload());
+          void openTrends() => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProGate(feature: ProFeature.trends, child: TrendsScreen()))).then((_) => reload());
 
           return ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 96), children: [
             _CaptureBanner(onReturn: reload),
@@ -225,7 +226,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     subtitle: '${d.health['health_score_status'] ?? '—'} • ${toDouble(d.health['emergency_runway_months']).toStringAsFixed(1)} months emergency runway',
                     trailing: '${toDouble(d.health['overall_health_score']).toStringAsFixed(1)}/10',
                     progress: toDouble(d.health['overall_health_score']) / 10,
-                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const EssentialsScreen())),
+                    onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProGate(feature: ProFeature.health, child: EssentialsScreen()))),
                   ),
                   const Divider(height: 1),
                 ],

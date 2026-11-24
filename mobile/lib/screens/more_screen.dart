@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../config.dart';
 import '../core/app_state.dart';
+import '../core/pro.dart';
 import '../insights/insight_alerts.dart';
 import '../widgets/common.dart';
 import 'ai_advisor_screen.dart';
@@ -28,12 +29,16 @@ class MoreScreen extends StatelessWidget {
 
   void _push(BuildContext context, Widget page) => Navigator.push(context, MaterialPageRoute(builder: (_) => page));
 
-  Widget _item(BuildContext context, IconData icon, String title, String subtitle, Widget page) => ListTile(
+  /// A menu row. With [pro], free users see a 🔒 PRO badge and a locked page.
+  Widget _item(BuildContext context, IconData icon, String title, String subtitle, Widget page, {ProFeature? pro}) => ListTile(
         leading: Icon(icon),
         title: Text(title),
         subtitle: Text(subtitle),
-        trailing: const Icon(Icons.chevron_right),
-        onTap: () => _push(context, page),
+        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+          if (pro != null) const ProBadge(),
+          const Icon(Icons.chevron_right),
+        ]),
+        onTap: () => _push(context, pro == null ? page : ProGate(feature: pro, child: page)),
       );
 
   @override
@@ -51,20 +56,33 @@ class MoreScreen extends StatelessWidget {
             onTap: () => _push(context, const ProfileScreen()),
           ),
         ),
+        if (AppConfig.isLocal) ...[
+          const SizedBox(height: 8),
+          Card(
+            color: context.isPro ? null : Theme.of(context).colorScheme.tertiaryContainer,
+            child: ListTile(
+              leading: const Icon(Icons.workspace_premium_outlined),
+              title: Text(context.isPro ? 'Finverse Pro is on' : 'Upgrade to Finverse Pro', style: const TextStyle(fontWeight: FontWeight.w600)),
+              subtitle: Text(context.isPro ? 'Every feature unlocked' : 'Automatic tracking, wealth, insights, no limits'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => openUpgrade(context),
+            ),
+          ),
+        ],
         const SectionHeader('Money tools'),
         Card(
           child: Column(children: [
             if (context.services.capture != null)
               _item(context, Icons.inbox_outlined, 'Review inbox', 'Payments from bank SMS, UPI apps and screenshots', const ReviewInboxScreen()),
             if (context.services.capture != null)
-              _item(context, Icons.auto_awesome_outlined, 'Auto-categorise rules', 'What Finverse learned from your choices', const CaptureRulesScreen()),
+              _item(context, Icons.auto_awesome_outlined, 'Auto-categorise rules', 'What Finverse learned from your choices', const CaptureRulesScreen(), pro: ProFeature.rules),
             if (context.services.insights != null)
-              _item(context, Icons.insights_outlined, 'Insights', 'Budget alerts, unusual payments, bills due', const InsightsScreen()),
+              _item(context, Icons.insights_outlined, 'Insights', 'Budget alerts, unusual payments, bills due', const InsightsScreen(), pro: ProFeature.insights),
             if (context.services.insights != null)
-              _item(context, Icons.query_stats, 'Trends & comparisons', 'Month by month, categories, wealth growth', const TrendsScreen()),
+              _item(context, Icons.query_stats, 'Trends & comparisons', 'Month by month, categories, wealth growth', const TrendsScreen(), pro: ProFeature.trends),
             _item(context, Icons.event_repeat, 'Bills & recurring', 'Rent, EMIs, subscriptions, salary', const SchedulesScreen()),
-            _item(context, Icons.upload_file, 'Import', 'Bank statements & broker holdings', const ImportScreen()),
-            _item(context, Icons.receipt_outlined, 'Income tax estimate', 'Old vs new regime (India)', const TaxScreen()),
+            _item(context, Icons.upload_file, 'Import', 'Bank statements & broker holdings', const ImportScreen(), pro: ProFeature.import),
+            _item(context, Icons.receipt_outlined, 'Income tax estimate', 'Old vs new regime (India)', const TaxScreen(), pro: ProFeature.tax),
           ]),
         ),
         const SectionHeader('Plan & protect'),
@@ -72,10 +90,10 @@ class MoreScreen extends StatelessWidget {
           child: Column(children: [
             // No AI chat in the phone-only version: nothing leaves the phone.
             if (!AppConfig.isLocal) _item(context, Icons.auto_awesome, 'AI advisor', 'Ask about your finances', const AiAdvisorScreen()),
-            _item(context, Icons.monitor_heart_outlined, 'Financial health', 'Emergency fund, cover, debt ratio', const EssentialsScreen()),
-            _item(context, Icons.fact_check_outlined, 'Financial check-up', '15 questions, personalised next steps', const AssessmentScreen()),
-            _item(context, Icons.credit_card_outlined, 'Debts & loans', 'Balances and payoff plans', const DebtsScreen()),
-            _item(context, Icons.health_and_safety_outlined, 'Insurance', 'Policies, cover and renewals', const InsuranceScreen()),
+            _item(context, Icons.monitor_heart_outlined, 'Financial health', 'Emergency fund, cover, debt ratio', const EssentialsScreen(), pro: ProFeature.health),
+            _item(context, Icons.fact_check_outlined, 'Financial check-up', '15 questions, personalised next steps', const AssessmentScreen(), pro: ProFeature.checkup),
+            _item(context, Icons.credit_card_outlined, 'Debts & loans', 'Balances and payoff plans', const DebtsScreen(), pro: ProFeature.debts),
+            _item(context, Icons.health_and_safety_outlined, 'Insurance', 'Policies, cover and renewals', const InsuranceScreen(), pro: ProFeature.insurance),
             _item(context, Icons.calculate_outlined, 'Calculators', 'SIP, EMI, FIRE and more', const CalculatorsScreen()),
             _item(context, Icons.school_outlined, 'Learn', 'Money basics and glossary', const LearnScreen()),
           ]),
@@ -109,6 +127,8 @@ class MoreScreen extends StatelessWidget {
               value: state.hideAmounts,
               onChanged: (_) => context.read<AppState>().toggleHideAmounts(),
             ),
+            if (ProStatus.devTools && state.isLocal)
+              _item(context, Icons.developer_mode_outlined, 'Developer', 'Pretend Pro on / off (test builds only)', const DeveloperScreen()),
             if (!state.isLocal)
               ListTile(
                 leading: Icon(Icons.logout, color: Theme.of(context).colorScheme.error),

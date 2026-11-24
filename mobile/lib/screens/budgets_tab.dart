@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../core/app_state.dart';
 import '../core/format.dart';
+import '../core/pro.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
 
@@ -30,7 +31,17 @@ class _BudgetsTabState extends State<BudgetsTab> with AutomaticKeepAliveClientMi
     _viewKey.currentState?.reload();
   }
 
+  /// Free version: at most [FreeLimits.budgets] categories with a limit per month.
+  Future<bool> _mayAddBudgets(int adding) async {
+    if (context.isProNow) return true;
+    final set = (await _fetch(_month)).where((b) => b['monthly_limit'] != null).length;
+    if (!mounted) return false;
+    return checkFreeLimit(context, current: set, adding: adding, limit: FreeLimits.budgets, what: 'budgets a month');
+  }
+
   Future<void> _editLimit(Map<String, dynamic> b) async {
+    if (b['monthly_limit'] == null && !await _mayAddBudgets(1)) return;
+    if (!mounted) return;
     final money = context.read<AppState>().money;
     final controller = TextEditingController(text: b['monthly_limit'] == null ? '' : toDouble(b['monthly_limit']).toStringAsFixed(0));
     final formKey = GlobalKey<FormState>();
@@ -82,6 +93,10 @@ class _BudgetsTabState extends State<BudgetsTab> with AutomaticKeepAliveClientMi
         if (mounted) context.showSnack('No budgets were set last month.');
         return;
       }
+      if (!mounted) return;
+      final current = await _fetch(_month);
+      final newOnes = withLimits.where((p) => current.any((c) => c['category_id'] == p['category_id'] && c['monthly_limit'] == null)).length;
+      if (newOnes > 0 && !await _mayAddBudgets(newOnes)) return;
       for (final b in withLimits) {
         await _save(b['category_id'].toString(), toDouble(b['monthly_limit']), _month);
       }

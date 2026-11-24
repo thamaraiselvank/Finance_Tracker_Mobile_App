@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../core/app_state.dart';
 import '../core/format.dart';
+import '../core/pro.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
 
@@ -195,6 +196,11 @@ class _AllSchedulesTabState extends State<_AllSchedulesTab> with AutomaticKeepAl
   bool get wantKeepAlive => true;
 
   Future<void> _openForm([Map<String, dynamic>? s]) async {
+    if (s == null && !context.isProNow) {
+      final count = (await context.services.schedules.list()).length;
+      if (!mounted || !await checkFreeLimit(context, current: count, limit: FreeLimits.recurring, what: 'bills & recurring items')) return;
+      if (!mounted) return;
+    }
     final saved = await showFormSheet<bool>(context, title: s == null ? 'New recurring item' : 'Edit recurring item', child: ScheduleForm(existing: s));
     if (saved == true) _viewKey.currentState?.reload();
   }

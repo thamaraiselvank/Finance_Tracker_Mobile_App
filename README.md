@@ -128,6 +128,28 @@ In this mode:
   screen's average interest rate is a plain average (the backend halved it by
   averaging with an empty liabilities table).
 
+### Free and Pro (offline build)
+
+One app for everyone; Pro features are locked until Pro is unlocked
+(`lib/core/pro.dart`). Free: up to 3 accounts, 3 budgets, 5 bills &
+recurring items, 30 automatic payments (SMS / UPI / screenshots) a month,
+SIP / lumpsum / EMI calculators, CSV export, app lock and manual backup.
+Pro: Wealth, Goals, Insights, Trends, Import, Tax, Financial health and
+check-up, Debts, Insurance, auto-categorise rules, CAGR / FIRE calculators,
+Excel / PDF export, automatic Drive backup, no limits. The cloud build has
+everything open.
+
+Buying is not connected yet (Google Play Billing is the next step). To test
+both versions, build with the developer switch and use
+**More → Developer → Pretend Pro**:
+
+```powershell
+flutter build apk --release --dart-define=FINVERSE_MODE=local --dart-define=FINVERSE_DEV=true
+```
+
+The Developer screen only exists in debug runs and builds with
+`FINVERSE_DEV=true`; never pass it for the Play Store build.
+
 The default build (without `FINVERSE_MODE`) is unchanged and still uses the
 live backend with sign-in.
 

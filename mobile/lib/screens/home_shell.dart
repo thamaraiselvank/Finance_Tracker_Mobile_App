@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../config.dart';
 import '../core/app_state.dart';
+import '../core/pro.dart';
 import '../insights/insight_alerts.dart';
 import 'ai_advisor_screen.dart';
 import 'dashboard_screen.dart';
@@ -44,8 +45,8 @@ class _HomeShellState extends State<HomeShell> {
     final pages = [
       DashboardScreen(onNavigate: _goTo),
       const MoneyScreen(),
-      const WealthScreen(),
-      const GoalsScreen(),
+      const ProGate(feature: ProFeature.wealth, child: WealthScreen()),
+      const ProGate(feature: ProFeature.goals, child: GoalsScreen()),
       const MoreScreen(),
     ];
     return Scaffold(

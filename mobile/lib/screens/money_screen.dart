@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../core/app_state.dart';
 import '../core/format.dart';
+import '../core/pro.dart';
 import '../widgets/common.dart';
 import 'budgets_tab.dart';
 import 'home_shell.dart';
@@ -272,6 +273,11 @@ class _AccountsTabState extends State<AccountsTab> with AutomaticKeepAliveClient
   Future<List<Map<String, dynamic>>> _load() => context.services.accounts.list();
 
   Future<void> _openForm([Map<String, dynamic>? account]) async {
+    if (account == null && !context.isProNow) {
+      final count = (await context.services.accounts.list()).length;
+      if (!mounted || !await checkFreeLimit(context, current: count, limit: FreeLimits.accounts, what: 'accounts')) return;
+      if (!mounted) return;
+    }
     final saved = await showFormSheet<bool>(context,
         title: account == null ? 'Add account' : 'Edit account', child: AccountForm(existing: account));
     if (saved == true) _viewKey.currentState?.reload();

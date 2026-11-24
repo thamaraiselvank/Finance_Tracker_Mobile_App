@@ -10,6 +10,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../core/app_state.dart';
 import '../core/format.dart';
+import '../core/pro.dart';
 import '../export/export_data.dart';
 import '../export/export_files.dart';
 import '../widgets/common.dart';
@@ -52,7 +53,10 @@ class _ExportScreenState extends State<ExportScreen> {
   String _type = 'ALL';
   String? _accountId, _categoryId, _assetClass;
   late DateTime _budgetMonth;
-  ExportFormat _format = ExportFormat.xlsx;
+  ExportFormat _chosenFormat = ExportFormat.xlsx;
+
+  /// Excel and PDF are Pro; the free version exports CSV.
+  ExportFormat get _format => context.isProNow ? _chosenFormat : ExportFormat.csv;
   bool _busy = false;
 
   List<Map<String, dynamic>> _accounts = [];
@@ -313,13 +317,19 @@ class _ExportScreenState extends State<ExportScreen> {
 
           const SectionHeader('Format'),
           SegmentedButton<ExportFormat>(
-            segments: const [
-              ButtonSegment(value: ExportFormat.xlsx, label: Text('Excel'), icon: Icon(Icons.grid_on)),
-              ButtonSegment(value: ExportFormat.csv, label: Text('CSV'), icon: Icon(Icons.notes)),
-              ButtonSegment(value: ExportFormat.pdf, label: Text('PDF'), icon: Icon(Icons.picture_as_pdf_outlined)),
+            segments: [
+              ButtonSegment(value: ExportFormat.xlsx, label: const Text('Excel'), icon: Icon(context.isPro ? Icons.grid_on : Icons.lock_outline)),
+              const ButtonSegment(value: ExportFormat.csv, label: Text('CSV'), icon: Icon(Icons.notes)),
+              ButtonSegment(value: ExportFormat.pdf, label: const Text('PDF'), icon: Icon(context.isPro ? Icons.picture_as_pdf_outlined : Icons.lock_outline)),
             ],
             selected: {_format},
-            onSelectionChanged: (s) => setState(() => _format = s.first),
+            onSelectionChanged: (s) {
+              if (s.first != ExportFormat.csv && !context.isProNow) {
+                openUpgrade(context, reason: 'Excel and PDF export are in Finverse Pro. The free version exports CSV.');
+                return;
+              }
+              setState(() => _chosenFormat = s.first);
+            },
           ),
           const SizedBox(height: 8),
           Text(switch (_format) {

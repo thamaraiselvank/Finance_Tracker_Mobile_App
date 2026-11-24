@@ -7,6 +7,7 @@ import '../capture/app_capture.dart';
 import '../capture/sms_sync.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
+import '../core/pro.dart';
 import '../core/theme.dart';
 import '../services/services.dart';
 import '../widgets/common.dart';
@@ -113,8 +114,17 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     }
   }
 
+  /// Free version: [FreeLimits.capturedPerMonth] automatic payments a month.
+  Future<bool> _mayAdd([int adding = 1]) async {
+    if (context.isProNow) return true;
+    final used = await _capture.addedThisMonth();
+    if (!mounted) return false;
+    return checkFreeLimit(context, current: used, adding: adding, limit: FreeLimits.capturedPerMonth, what: 'automatic payments this month');
+  }
+
   /// "Add" button: asks for the account first if the message didn't identify one.
   Future<void> _confirm(Json item) async {
+    if (!await _mayAdd()) return;
     if (item['account_id'] == null && await _pickAccount(item) == null) return;
     HapticFeedback.lightImpact();
     _reviewed++;
@@ -138,6 +148,7 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
         await _pickAccount(item); // card stays; swipe again or tap Add
         return false;
       }
+      if (!await _mayAdd()) return false;
       await _capture.confirm(item['id'] as String);
       HapticFeedback.lightImpact();
       return true;
@@ -166,7 +177,7 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
 
   Future<void> _confirmAllReady() async {
     final ready = (_items ?? []).where((i) => i['account_id'] != null).toList();
-    if (ready.isEmpty) return;
+    if (ready.isEmpty || !await _mayAdd(ready.length) || !mounted) return;
     setState(() => _confirmingAll = true);
     var failed = 0;
     for (final item in ready) {
@@ -254,7 +265,7 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     if (changed == true) await _load();
   }
 
-  void _openRules() => Navigator.push(context, MaterialPageRoute(builder: (_) => const CaptureRulesScreen())).then((_) => _load());
+  void _openRules() => Navigator.push(context, MaterialPageRoute(builder: (_) => const ProGate(feature: ProFeature.rules, child: CaptureRulesScreen()))).then((_) => _load());
 
   @override
   Widget build(BuildContext context) {

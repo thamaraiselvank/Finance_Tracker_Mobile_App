@@ -1,4 +1,5 @@
 import 'package:finance_tracker_mobile/core/app_state.dart';
+import 'package:finance_tracker_mobile/core/pro.dart';
 import 'package:finance_tracker_mobile/local/local_db.dart';
 import 'package:finance_tracker_mobile/local/local_services.dart';
 import 'package:finance_tracker_mobile/screens/review_inbox_screen.dart';
@@ -18,10 +19,11 @@ void main() {
   });
   tearDown(() => db.close());
 
-  Widget app() => MultiProvider(
+  Widget app({bool pro = true}) => MultiProvider(
         providers: [
           Provider<Services>.value(value: services),
           ChangeNotifierProvider(create: (_) => AppState(services.auth)),
+          ChangeNotifierProvider(create: (_) => ProStatus(forced: pro)),
         ],
         child: const MaterialApp(home: ReviewInboxScreen()),
       );
@@ -75,5 +77,29 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('All caught up'), findsOneWidget);
     expect(find.textContaining('You reviewed 2 payments'), findsOneWidget);
+  });
+
+  testWidgets('free version stops at the monthly limit of automatic payments', (tester) async {
+    await services.accounts.create({'name': 'HDFC', 'account_type': 'SAVINGS', 'balance': 10000});
+    final now = DateTime.now();
+    final day = DateTime(now.year, now.month, 1, 9);
+    await services.capture!.ingest([
+      for (var i = 0; i <= FreeLimits.capturedPerMonth; i++)
+        CapturedMessage(source: 'UPI_NOTIFICATION', sender: 'GPAY', body: 'You paid ₹${10 + i}.00 to Shop$i', receivedAt: day.add(Duration(minutes: i))),
+    ]);
+    final pending = await services.capture!.pending();
+    for (final p in pending.where((p) => p['merchant'] != 'Shop0')) {
+      await services.capture!.confirm(p['id'] as String);
+    }
+    expect(await services.capture!.addedThisMonth(), FreeLimits.capturedPerMonth);
+    final balance = (await services.accounts.list()).single['balance'];
+
+    await tester.pumpWidget(app(pro: false));
+    await tester.pumpAndSettle();
+    await tester.drag(find.text('Shop0'), const Offset(600, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('Free version: up to ${FreeLimits.capturedPerMonth} automatic payments this month'), findsOneWidget);
+    expect((await services.accounts.list()).single['balance'], balance);
+    expect(await services.capture!.pendingCount(), 1);
   });
 }

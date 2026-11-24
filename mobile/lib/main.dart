@@ -8,6 +8,7 @@ import 'config.dart';
 import 'core/api_client.dart';
 import 'core/app_lock.dart';
 import 'core/app_state.dart';
+import 'core/pro.dart';
 import 'core/theme.dart';
 import 'insights/insight_alerts.dart';
 import 'local/local_db.dart';
@@ -40,6 +41,8 @@ Future<void> main() async {
   }
 
   final state = AppState(services.auth)..bootstrap();
+  final pro = ProStatus();
+  await pro.init();
 
   // Phone-only version: automatic capture into the review inbox from bank
   // SMS, UPI app notifications and "Share to Finverse".
@@ -54,7 +57,7 @@ Future<void> main() async {
 
   // Phone-only version: encrypted backups (file / Google Drive).
   final backupService = services.backup;
-  final backup = backupService == null ? null : (BackupManager(backupService)..init());
+  final backup = backupService == null ? null : (BackupManager(backupService)..autoAllowed = (() => pro.isPro)..init());
 
   // Phone-only version: alerts and reminders as phone notifications.
   final insightsService = services.insights;
@@ -72,6 +75,7 @@ Future<void> main() async {
     providers: [
       Provider<Services>.value(value: services),
       ChangeNotifierProvider<AppState>.value(value: state),
+      ChangeNotifierProvider<ProStatus>.value(value: pro),
       if (lock != null) ChangeNotifierProvider<AppLock>.value(value: lock),
       if (sms != null) ChangeNotifierProvider<SmsSync>.value(value: sms),
       if (notifications != null) ChangeNotifierProvider<NotificationSync>.value(value: notifications),
