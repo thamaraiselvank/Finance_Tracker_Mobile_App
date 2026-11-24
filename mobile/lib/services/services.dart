@@ -249,6 +249,25 @@ abstract class CaptureService {
   Future<void> setLastSmsScan(DateTime time);
 }
 
+/// Encrypted backup and restore of everything on the phone (phone-only
+/// version). Backups are locked with the user's backup password, never with
+/// the phone's own database key.
+abstract class BackupService {
+  /// Writes a backup of all data, locked with [password], to a new file in
+  /// [directory]. Returns `path`, `file_name` and `summary` (`created_at`,
+  /// `profile_name`, `counts`).
+  Future<Json> create(String password, {required String directory});
+
+  /// Opens the backup at [path] (a private copy: an older backup is upgraded
+  /// in place) and returns its `summary`, without changing anything.
+  /// Throws with a user-facing message for a wrong password or a bad file.
+  Future<Json> inspect(String path, String password);
+
+  /// Replaces everything on this phone with the backup at [path], in one
+  /// step (on any error the phone keeps its data). Returns its `summary`.
+  Future<Json> restore(String path, String password);
+}
+
 /// All services together, provided once at the top of the app.
 class Services {
   const Services({
@@ -268,6 +287,7 @@ class Services {
     required this.imports,
     required this.ai,
     this.capture,
+    this.backup,
   });
 
   final AuthService auth;
@@ -288,4 +308,7 @@ class Services {
 
   /// SMS capture and review inbox. Null in the cloud version.
   final CaptureService? capture;
+
+  /// Encrypted backup and restore. Null in the cloud version (data is on the server).
+  final BackupService? backup;
 }

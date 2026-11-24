@@ -6,10 +6,12 @@ import '../core/app_state.dart';
 import '../widgets/common.dart';
 import 'ai_advisor_screen.dart';
 import 'assessment_screen.dart';
+import 'backup_screen.dart';
 import 'calculators_screen.dart';
 import 'capture_rules_screen.dart';
 import 'debts_screen.dart';
 import 'essentials_screen.dart';
+import 'export_screen.dart';
 import 'import_screen.dart';
 import 'insurance_screen.dart';
 import 'learn_screen.dart';
@@ -73,6 +75,10 @@ class MoreScreen extends StatelessWidget {
         const SectionHeader('Settings'),
         Card(
           child: Column(children: [
+            if (context.services.backup != null)
+              _item(context, Icons.backup_outlined, 'Backup & export', 'Google Drive, backup file, Excel / CSV / PDF', const BackupScreen())
+            else
+              _item(context, Icons.table_view_outlined, 'Export', 'Excel, CSV or PDF', const ExportScreen()),
             ListTile(
               leading: const Icon(Icons.palette_outlined),
               title: const Text('Theme'),

@@ -1,9 +1,11 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../backup/backup_manager.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
 import '../widgets/common.dart';
+import 'backup_screen.dart';
 
 /// 3-step setup shown to new users, mirroring the web onboarding.
 class OnboardingScreen extends StatefulWidget {
@@ -150,6 +152,18 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               ],
               Expanded(child: SaveButton(busy: _busy, onPressed: _next, label: _step == 2 ? 'Finish' : 'Next')),
             ]),
+            // New phone? Bring everything back instead of starting over.
+            if (_step == 0 && context.watch<BackupManager?>() != null) ...[
+              const SizedBox(height: 24),
+              const Divider(),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.restore),
+                title: const Text('Used Finverse before?'),
+                subtitle: const Text('Restore a backup file instead of starting fresh'),
+                trailing: OutlinedButton(onPressed: _busy ? null : () => restoreFromFile(context), child: const Text('Restore')),
+              ),
+            ],
           ]),
         ),
       ),

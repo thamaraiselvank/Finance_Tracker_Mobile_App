@@ -44,6 +44,14 @@ class AppState extends ChangeNotifier {
     return (user?['username'] as String?) ?? 'there';
   }
 
+  /// Starts the app over with fresh data (after a backup was restored):
+  /// every screen is rebuilt, so nothing old stays on screen.
+  Future<void> reload() async {
+    status = AuthStatus.loading;
+    notifyListeners();
+    await bootstrap();
+  }
+
   Future<void> bootstrap() async {
     final savedTheme = await _storage.read(key: _themeKey);
     themeMode = switch (savedTheme) {

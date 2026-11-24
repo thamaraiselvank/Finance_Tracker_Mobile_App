@@ -37,6 +37,10 @@ class Money {
         .format(toDouble(value));
   }
 
+  /// With paise / cents, for statements and reports: ₹1,23,456.50.
+  String exact(dynamic value) =>
+      NumberFormat.currency(locale: _locales[code], symbol: symbol, decimalDigits: 2).format(toDouble(value));
+
   /// Short form for tight spaces: ₹1.2L, ₹3.4Cr (INR) or $1.2K, $3.4M.
   String compact(dynamic value, {bool hidden = false}) {
     if (hidden) return '$symbol ••••';

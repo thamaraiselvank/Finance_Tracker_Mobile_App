@@ -5,6 +5,8 @@ import '../core/app_state.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
+import '../export/export_data.dart' show ExportSection;
+import 'export_screen.dart' show ExportButton;
 import 'money_screen.dart' show AppScaffoldBar;
 
 const goalTypes = {
@@ -99,7 +101,7 @@ class _GoalsScreenState extends State<GoalsScreen> {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     return Scaffold(
-      appBar: const AppScaffoldBar(title: 'Goals'),
+      appBar: const AppScaffoldBar(title: 'Goals', actions: [ExportButton(sections: {ExportSection.goals})]),
       floatingActionButton: FloatingActionButton.extended(onPressed: () => _openForm(), icon: const Icon(Icons.add), label: const Text('Goal')),
       body: AsyncView<_GoalsData>(
         key: _viewKey,

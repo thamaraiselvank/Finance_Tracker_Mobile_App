@@ -37,15 +37,18 @@ class MoneyScreen extends StatelessWidget {
 }
 
 class AppScaffoldBar extends StatelessWidget implements PreferredSizeWidget {
-  const AppScaffoldBar({super.key, required this.title, this.bottom});
+  const AppScaffoldBar({super.key, required this.title, this.bottom, this.actions = const []});
   final String title;
   final PreferredSizeWidget? bottom;
+
+  /// Shown before the hide-amounts button.
+  final List<Widget> actions;
 
   @override
   Size get preferredSize => Size.fromHeight(kToolbarHeight + (bottom?.preferredSize.height ?? 0));
 
   @override
-  Widget build(BuildContext context) => AppBar(title: Text(title), actions: const [HideAmountsButton()], bottom: bottom);
+  Widget build(BuildContext context) => AppBar(title: Text(title), actions: [...actions, const HideAmountsButton()], bottom: bottom);
 }
 
 // ---------------------------------------------------------------------------

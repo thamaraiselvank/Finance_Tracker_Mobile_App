@@ -9,8 +9,10 @@ import 'package:provider/provider.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
+import '../export/export_data.dart' show ExportSection;
 import '../widgets/common.dart';
 import '../widgets/transaction_tile.dart';
+import 'export_screen.dart' show ExportScreen;
 import 'money_screen.dart' show TransactionForm;
 
 enum _Period { month, year }
@@ -259,7 +261,29 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
         'Transactions',
         trailing: items.isEmpty
             ? null
-            : TextButton.icon(
+            : Row(mainAxisSize: MainAxisSize.min, children: [
+                TextButton.icon(
+                  // Exports what is shown: this period, type and category.
+                  onPressed: () {
+                    final (start, end) = _range(_anchor);
+                    final category = _categoryFilter?.key;
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ExportScreen(
+                          sections: const {ExportSection.transactions},
+                          start: start,
+                          end: end,
+                          type: _categoryFilter != null ? _breakdownType : _type,
+                          categoryId: category == 'none' ? null : category,
+                        ),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.ios_share, size: 18),
+                  label: const Text('Export'),
+                ),
+                TextButton.icon(
                 style: TextButton.styleFrom(foregroundColor: theme.colorScheme.error),
                 onPressed: () => deleteAllFlow<Map<String, dynamic>>(
                   context,
@@ -273,6 +297,7 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
                 icon: const Icon(Icons.delete_sweep_outlined, size: 18),
                 label: Text(_hasFilters ? 'Delete shown' : 'Delete all'),
               ),
+              ]),
       ),
       TextField(
         controller: _searchController,

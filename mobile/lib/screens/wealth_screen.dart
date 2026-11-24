@@ -6,6 +6,8 @@ import '../core/app_state.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
 import '../widgets/common.dart';
+import '../export/export_data.dart' show ExportSection;
+import 'export_screen.dart' show ExportButton;
 import 'money_screen.dart' show AppScaffoldBar;
 
 const assetClasses = {
@@ -74,7 +76,7 @@ class _WealthScreenState extends State<WealthScreen> {
     final state = context.watch<AppState>();
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: const AppScaffoldBar(title: 'Wealth'),
+      appBar: const AppScaffoldBar(title: 'Wealth', actions: [ExportButton(sections: {ExportSection.holdings})]),
       floatingActionButton: FloatingActionButton.extended(onPressed: () => _openForm(), icon: const Icon(Icons.add), label: const Text('Asset')),
       body: AsyncView<Map<String, dynamic>>(
         key: _viewKey,

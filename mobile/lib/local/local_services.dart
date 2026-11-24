@@ -14,6 +14,7 @@ import '../services/errors.dart';
 import '../services/services.dart';
 import 'assessment.dart';
 import 'health_engine.dart';
+import 'local_backup.dart';
 import 'local_capture.dart';
 import 'local_db.dart';
 import 'local_import.dart';
@@ -51,6 +52,7 @@ Services localServices(LocalDb db, {TaxRules? taxRules, StatementPdfReader pdfRe
       imports: LocalImportService(db, pdfReader: pdfReader),
       ai: const _PendingAi(),
       capture: LocalCaptureService(db),
+      backup: LocalBackupService(db),
     );
 
 // ---------------------------------------------------------------------------

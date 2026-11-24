@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import 'backup/backup_manager.dart';
 import 'capture/app_capture.dart';
 import 'capture/sms_sync.dart';
 import 'config.dart';
@@ -48,6 +49,10 @@ Future<void> main() async {
     notifications = NotificationSync(capture, onAdded: sms.refreshCount)..init();
     ShareCapture(capture, navigatorKey, onAdded: sms.refreshCount).init();
   }
+
+  // Phone-only version: encrypted backups (file / Google Drive).
+  final backupService = services.backup;
+  final backup = backupService == null ? null : (BackupManager(backupService)..init());
   runApp(MultiProvider(
     providers: [
       Provider<Services>.value(value: services),
@@ -55,6 +60,7 @@ Future<void> main() async {
       if (lock != null) ChangeNotifierProvider<AppLock>.value(value: lock),
       if (sms != null) ChangeNotifierProvider<SmsSync>.value(value: sms),
       if (notifications != null) ChangeNotifierProvider<NotificationSync>.value(value: notifications),
+      if (backup != null) ChangeNotifierProvider<BackupManager>.value(value: backup),
     ],
     child: FinverseApp(lock: lock),
   ));
