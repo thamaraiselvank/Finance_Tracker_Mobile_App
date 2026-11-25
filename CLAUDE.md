@@ -108,7 +108,7 @@ All work is on the **`local-first`** branch (pushed to origin). `main` still has
 | e36d606 | fix | Share to Finverse: decode shared images natively and save as JPEG; friendly error text (did not fix the crash, see 398d5a8) |
 | 398d5a8 | fix | **Real share/OCR crash fix:** AGP 9 R8 strict mode stripped ML Kit registrar constructors → `android.r8.strictFullModeForKeepRules=false` + keep rules |
 | 1944b09 | fix | "Read older SMS" brings back payments deleted from Money / ignored by hand (`ingest(restore: true)`); SMS card says what a read found |
-| (next) | — | Compare months (category → subcategory → payees), 7 more insight rules, Wealth overview (net worth chart, cushion, debt ratios, best/worst holdings, accounts) |
+| 644aa61 | — | Compare months (category → subcategory → payees), 7 more insight rules, Wealth overview (net worth chart, cushion, debt ratios, best/worst holdings, accounts) |
 
 Run `git log --stat` for the details. The commit messages describe each feature.
 
