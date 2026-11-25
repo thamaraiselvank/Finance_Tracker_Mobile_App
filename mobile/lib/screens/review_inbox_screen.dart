@@ -725,7 +725,9 @@ class SmsStatusCard extends StatelessWidget {
             ListTile(title: Text(e.value), onTap: () => Navigator.pop(ctx, e.key)),
           const Padding(
             padding: EdgeInsets.fromLTRB(16, 4, 16, 12),
-            child: Text('Payments already in the inbox, added or ignored are recognised and not added again.'),
+            child: Text('Payments already in Money or waiting here are not added again. '
+                'Payments you deleted from Money or ignored come back here, '
+                'except ones an "Ignore" rule hides.'),
           ),
         ]),
       ),
@@ -764,8 +766,11 @@ class SmsStatusCard extends StatelessWidget {
     if (sync.needsHistoryChoice) return _HistoryChoiceCard(sync: sync);
     final last = sync.lastScan;
     final result = sync.lastResult;
-    final added = (result?['added'] as int?) ?? 0;
+    final restored = (result?['restored'] as int?) ?? 0;
+    final added = ((result?['added'] as int?) ?? 0) - restored;
     final auto = (result?['auto_added'] as int?) ?? 0;
+    final already = (result?['duplicates'] as int?) ?? 0;
+    final nothingNew = result != null && added <= 0 && auto == 0 && restored == 0;
     return Card(
       child: ListTile(
         leading: sync.scanning
@@ -776,7 +781,9 @@ class SmsStatusCard extends StatelessWidget {
             [
               if (last != null) 'Last read ${DateFormat('d MMM, h:mm a').format(last)}',
               if (added > 0) '$added new',
+              if (restored > 0) '$restored back from deleted / ignored',
               if (auto > 0) '$auto added automatically',
+              if (nothingNew) already > 0 ? 'Nothing new ($already already in Money or here)' : 'Nothing new',
             ].join(' · ')),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           IconButton(

@@ -54,7 +54,7 @@ void main() {
         sms(swiggy()),
         sms('123456 is your OTP for txn of Rs 99 at X on card ending 9012', at: t0.add(const Duration(minutes: 1))),
       ]);
-      expect(result, {'read': 2, 'added': 1, 'auto_added': 0, 'auto_ignored': 0, 'duplicates': 0, 'skipped': 1, 'ids': hasLength(1)});
+      expect(result, {'read': 2, 'added': 1, 'auto_added': 0, 'auto_ignored': 0, 'duplicates': 0, 'skipped': 1, 'restored': 0, 'ids': hasLength(1)});
       expect(await capture.pendingCount(), 1);
       expect(await transactions.list(), isEmpty);
       expect(await balanceOf(id), 1000);
@@ -198,6 +198,41 @@ void main() {
       await transactions.delete(id);
       expect(await transactions.list(), isEmpty);
       expect((await capture.ingest([sms(swiggy())]))['duplicates'], 1);
+      expect(await capture.pendingCount(), 0);
+    });
+
+    test('reading older SMS again brings back deleted and ignored payments, not ones still in Money', () async {
+      await addAccount('A');
+      final second = swiggy(ref: '431234500001', amount: '90.00');
+      await capture.ingest([sms(swiggy()), sms(second, at: t0.add(const Duration(hours: 2)))]);
+      final items = await capture.pending();
+      final deleted = items.firstWhere((p) => p['amount'] == 250.0)['id'] as String;
+      final kept = items.firstWhere((p) => p['amount'] == 90.0)['id'] as String;
+      await capture.confirm(deleted);
+      await capture.confirm(kept);
+      await transactions.delete(deleted);
+
+      final again = await capture.ingest([sms(swiggy()), sms(second, at: t0.add(const Duration(hours: 2)))], restore: true);
+      expect(again['restored'], 1);
+      expect(again['added'], 1);
+      expect(again['duplicates'], 1); // still in Money
+      expect((await capture.pending()).single['id'], deleted);
+      expect((await transactions.list()).single['id'], kept);
+
+      // Reading once more does not list it twice.
+      final third = await capture.ingest([sms(swiggy())], restore: true);
+      expect(third['restored'], 0);
+      expect(await capture.pendingCount(), 1);
+    });
+
+    test('payments hidden by an Ignore rule stay hidden when reading again', () async {
+      await addAccount('A');
+      await capture.ingest([sms(swiggy())]);
+      final id = (await capture.pending()).single['id'] as String;
+      await capture.classify(id, {'type': 'IGNORE', 'remember': true});
+      expect(await capture.pendingCount(), 0);
+      final again = await capture.ingest([sms(swiggy())], restore: true);
+      expect(again['restored'], 0);
       expect(await capture.pendingCount(), 0);
     });
 

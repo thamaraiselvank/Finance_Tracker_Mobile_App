@@ -52,8 +52,8 @@ class LocalCaptureService implements CaptureService {
   static const duplicateWindow = Duration(minutes: 10);
 
   @override
-  Future<Json> ingest(List<CapturedMessage> messages) async {
-    var duplicates = 0, skipped = 0, autoAdded = 0, autoIgnored = 0;
+  Future<Json> ingest(List<CapturedMessage> messages, {bool restore = false}) async {
+    var duplicates = 0, skipped = 0, autoAdded = 0, autoIgnored = 0, restored = 0;
     final ids = <String>[];
     _db.transaction(() {
       for (final m in messages) {
@@ -72,6 +72,11 @@ class LocalCaptureService implements CaptureService {
         final exact = _db.queryOne('SELECT id FROM transactions WHERE dedup_key = ?', [dedupKey])?['id'] as String?;
         final same = exact ?? _nearDuplicate(parsed, direction, amountMinor, at);
         if (same != null) {
+          if (restore && _restore(same)) {
+            ids.add(same);
+            restored++;
+            continue;
+          }
           if (exact == null) _enrich(same, parsed, m, dedupKey);
           duplicates++;
           continue;
@@ -136,6 +141,7 @@ class LocalCaptureService implements CaptureService {
       'auto_ignored': autoIgnored,
       'duplicates': duplicates,
       'skipped': skipped,
+      'restored': restored,
       'ids': ids,
     };
   }
@@ -599,6 +605,19 @@ class LocalCaptureService implements CaptureService {
 
   String? _activeAccount(String? id) =>
       id == null ? null : _db.queryOne('SELECT id FROM accounts WHERE id = ? AND is_active = 1', [id])?['id'] as String?;
+
+  /// Puts a payment that was deleted from Money or ignored by hand back in
+  /// the inbox. Not one an "Ignore" rule hides: the user asked for that.
+  bool _restore(String id) {
+    final row = _db.queryOne('SELECT * FROM transactions WHERE id = ?', [id]);
+    if (row == null || row['status'] != 'IGNORED') return false;
+    final direction = row['direction'] as String? ?? directionOf(row['type'] as String);
+    final choice = _choose(_keysOf(row), direction, direction == 'IN' ? 'INCOME' : 'EXPENSE',
+        row['raw_text'] as String? ?? '', row['merchant'] as String?);
+    if (choice.ignore) return false;
+    _db.execute("UPDATE transactions SET status = 'PENDING' WHERE id = ?", [id]);
+    return true;
+  }
 
   /// Id of an already captured payment that is the same as [parsed], if any.
   String? _nearDuplicate(ParsedSms parsed, String direction, int amountMinor, DateTime at) {

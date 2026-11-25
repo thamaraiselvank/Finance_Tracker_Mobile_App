@@ -197,8 +197,14 @@ abstract class CaptureService {
   /// Parses the messages and adds new payments to the inbox. Returns counts:
   /// `read`, `added` (to the inbox), `auto_added` (straight to Money by a rule
   /// with "add automatically"), `auto_ignored` (rule says ignore),
-  /// `duplicates`, `skipped` (not a payment), and `ids` (the new inbox items).
-  Future<Json> ingest(List<CapturedMessage> messages);
+  /// `duplicates`, `skipped` (not a payment), `restored` and `ids` (the new
+  /// inbox items).
+  ///
+  /// With [restore] (the user asked to read older SMS again), a payment that
+  /// was deleted from Money or ignored by hand comes back to the inbox
+  /// (counted in `restored` and `added`). Payments still in Money or in the
+  /// inbox, and ones an "Ignore" rule hides, are still skipped.
+  Future<Json> ingest(List<CapturedMessage> messages, {bool restore = false});
 
   /// Pending transactions, newest first, in TransactionOut shape plus
   /// `merchant`, `bank`, `account_last4`, `upi_ref`, `raw_text`, `occurred_at`,

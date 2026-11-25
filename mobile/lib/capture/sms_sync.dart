@@ -98,8 +98,9 @@ class SmsSync extends ChangeNotifier with WidgetsBindingObserver {
     await _read(since: DateTime.now().subtract(Duration(days: days)));
   }
 
-  /// Reads older SMS again (already captured ones are recognised and skipped).
-  Future<void> readHistory(int days) => _read(since: DateTime.now().subtract(Duration(days: days)));
+  /// Reads older SMS again. Payments still in Money or the inbox are
+  /// skipped; ones deleted from Money or ignored by hand come back.
+  Future<void> readHistory(int days) => _read(since: DateTime.now().subtract(Duration(days: days)), restore: true);
 
   Future<void> openSettings() => openAppSettings();
 
@@ -111,7 +112,7 @@ class SmsSync extends ChangeNotifier with WidgetsBindingObserver {
     await _read(since: lastScan!);
   }
 
-  Future<void> _read({required DateTime since}) async {
+  Future<void> _read({required DateTime since, bool restore = false}) async {
     if (!supported || !granted || scanning) return;
     final now = DateTime.now();
     scanning = true;
@@ -119,7 +120,7 @@ class SmsSync extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     try {
       final messages = await inbox.read(since: since);
-      lastResult = await capture.ingest(messages);
+      lastResult = await capture.ingest(messages, restore: restore);
       await capture.setLastSmsScan(now);
       lastScan = now;
       await refreshCount();
