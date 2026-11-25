@@ -9,6 +9,7 @@ import '../widgets/common.dart';
 import '../export/export_data.dart' show ExportSection;
 import 'export_screen.dart' show ExportButton;
 import 'money_screen.dart' show AppScaffoldBar;
+import 'wealth_overview.dart';
 
 const assetClasses = {
   'EQUITY': 'Stocks / Equity',
@@ -37,7 +38,15 @@ class _WealthScreenState extends State<WealthScreen> {
   final _viewKey = GlobalKey<AsyncViewState<Map<String, dynamic>>>();
   bool _refreshingPrices = false;
 
-  Future<Map<String, dynamic>> _load() => context.services.assets.summary();
+  /// The summary, plus the phone-only overview (net worth over time,
+  /// safety cushion, best and worst holdings, accounts) when available.
+  Future<Map<String, dynamic>> _load() async {
+    final services = context.services;
+    final summary = await services.assets.summary();
+    final insights = services.insights;
+    if (insights == null) return summary;
+    return {...summary, 'overview': await insights.wealthOverview()};
+  }
 
   Future<void> _openForm([Map<String, dynamic>? asset]) async {
     final saved = await showFormSheet<bool>(context, title: asset == null ? 'Add asset' : 'Edit asset', child: AssetForm(existing: asset));
@@ -100,6 +109,7 @@ class _WealthScreenState extends State<WealthScreen> {
               StatTile(label: 'Liabilities', value: state.money.compact(s['total_liabilities_outstanding'], hidden: state.hideAmounts), color: AppColors.expense),
               StatTile(label: 'Monthly EMIs', value: state.money.compact(s['total_monthly_emi'], hidden: state.hideAmounts)),
             ]),
+            ...wealthOverviewSections(s['overview'] as Map<String, dynamic>?),
             if (classes.isNotEmpty) ...[
               const SectionHeader('Allocation'),
               Card(

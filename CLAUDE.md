@@ -72,6 +72,7 @@ that chooses between `remoteServices(ApiClient())` (cloud) and
 | `backup/` | Encrypted backup file (ChaCha20 SQLite, PBKDF2 600k), Google Drive appDataFolder, auto backup |
 | `export/` | Excel / CSV / PDF export (bundled Roboto for the ₹ sign) |
 | `insights/` | `insight_alerts.dart`: phone notifications (flutter_local_notifications) |
+| `screens/compare_screen.dart`, `screens/wealth_overview.dart` | Compare months; extra Wealth cards. Data from `InsightsService.compareMonths` / `wealthOverview` (InsightEngine in `local_insights.dart`) |
 | `screens/`, `widgets/` | UI |
 
 Native Android (Kotlin, `mobile/android/app/src/main/kotlin/com/finverse/finance_tracker_mobile/`):
@@ -104,7 +105,10 @@ All work is on the **`local-first`** branch (pushed to origin). `main` still has
 | a32bf37 | 7 | Smart insights + phone notifications (rules, no AI) |
 | 164f0c8 | 8* | Step 8 (AI chat) **skipped**. Instead: Trends & comparisons screen, vs-last-month tiles, daily net-worth snapshots (schema v6); AI advisor hidden offline |
 | 659de4b | — | Free and Pro: locks, free limits, upgrade screen, Pretend Pro switch |
-| e36d606 | fix | Share to Finverse crash (ML Kit null bitmap on some shared images): decode natively and save as JPEG; friendly error text |
+| e36d606 | fix | Share to Finverse: decode shared images natively and save as JPEG; friendly error text (did not fix the crash, see 398d5a8) |
+| 398d5a8 | fix | **Real share/OCR crash fix:** AGP 9 R8 strict mode stripped ML Kit registrar constructors → `android.r8.strictFullModeForKeepRules=false` + keep rules |
+| 1944b09 | fix | "Read older SMS" brings back payments deleted from Money / ignored by hand (`ingest(restore: true)`); SMS card says what a read found |
+| (next) | — | Compare months (category → subcategory → payees), 7 more insight rules, Wealth overview (net worth chart, cushion, debt ratios, best/worst holdings, accounts) |
 
 Run `git log --stat` for the details. The commit messages describe each feature.
 
@@ -163,5 +167,12 @@ Limits live in `FreeLimits` in [core/pro.dart](mobile/lib/core/pro.dart). For no
 - **Commits on Windows:** PowerShell 5.1 breaks inline multi-line `-m` messages.
   Use the Bash tool with `git commit -F - <<'EOF' … EOF`, or `git commit -F <file>`.
 - **Never commit or print** anything from `signing/`, `key.properties` or `.env`.
+- **Release-only crashes:** the project uses AGP 9 (R8 full mode). Anything a
+  library creates by reflection needs keep rules. To check, unzip the APK and run
+  `dexdump` (Android SDK `build-tools/37.0.0`) on `classes*.dex` to see whether
+  a class still has its `<init>`. There is no working emulator on this PC
+  (no hypervisor driver), so the user tests on their phone.
+- **Deleting captured payments** in Money marks them `IGNORED` (not erased) so
+  automatic SMS reads never bring them back; only "Read older SMS" restores them.
 - Writing style the user prefers: plain, simple English in UI text and in
   explanations; no jargon in user-facing messages; no raw stack traces in the UI.

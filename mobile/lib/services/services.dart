@@ -313,6 +313,24 @@ abstract class InsightsService {
   /// `highlights` (ready-made lines). Also takes today's net-worth reading.
   Future<Json> trends();
 
+  /// Two months side by side, for spending (`EXPENSE`) or income (`INCOME`).
+  /// [monthA] / [monthB] are `yyyy-MM` (default: this month and last month).
+  /// With [sameDays], when one of them is the current month both are cut at
+  /// today's day of the month, so a part month is not set against a full one.
+  /// Returns `available` (months with data, newest first, {month, label}),
+  /// `a` and `b` ({month, label, from, to, partial, income, expense, saved}),
+  /// and `categories`: {id, name, color, a, b, count_a, count_b,
+  /// subcategories: [{id, name, a, b, count_a, count_b}],
+  /// payees: [{name, a, b, count_a, count_b}]}, biggest first.
+  Future<Json> compareMonths({String? monthA, String? monthB, String type = 'EXPENSE', bool sameDays = false});
+
+  /// Extra numbers for the Wealth screen: `history` (net-worth readings for
+  /// the last year), `changes` ({month, quarter, start}: {date, from, to}),
+  /// `accounts`, `split` (ready money vs locked), `emergency` (months of
+  /// spending covered), `debt` (debt to assets, EMIs to income),
+  /// `gainers` / `losers` and `concentration` (biggest holding's share).
+  Future<Json> wealthOverview();
+
   /// Records that these insights were sent as notifications; returns the
   /// ones that had not been sent before.
   Future<List<String>> markNotified(List<String> keys);
@@ -324,6 +342,7 @@ const notificationKinds = {
   'spending': 'Spending higher than usual',
   'unusual': 'Unusual or double payments',
   'bill': 'Bills, EMIs and renewals due',
+  'income': 'Usual income not received',
   'summary': 'Monthly summary',
   'checkin': 'Reminder after 3 days away',
 };

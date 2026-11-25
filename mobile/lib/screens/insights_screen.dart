@@ -44,6 +44,7 @@ String maskAmounts(BuildContext context, String text) {
     'recurring' => Icons.autorenew,
     'summary' => Icons.insights_outlined,
     'wealth' => Icons.trending_up,
+    'income' => Icons.payments_outlined,
     _ => Icons.lightbulb_outline,
   };
   final color = switch (insight['severity']) {
@@ -245,6 +246,7 @@ class NotificationSettingsScreen extends StatelessWidget {
     'spending': 'When this month is well above your usual',
     'unusual': 'A much bigger payment than usual, or one added twice',
     'bill': 'The day before a bill or EMI is due, and a week before a policy renews',
+    'income': 'When a regular income (like salary) is later than usual',
     'summary': 'On the 1st: what came in, what went out, what you saved',
     'checkin': 'If you have not opened Finverse for 3 days, to pick up new payments',
   };

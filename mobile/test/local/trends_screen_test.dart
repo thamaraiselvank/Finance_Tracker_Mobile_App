@@ -1,7 +1,9 @@
 import 'package:finance_tracker_mobile/core/app_state.dart';
 import 'package:finance_tracker_mobile/local/local_db.dart';
 import 'package:finance_tracker_mobile/local/local_services.dart';
+import 'package:finance_tracker_mobile/screens/compare_screen.dart';
 import 'package:finance_tracker_mobile/screens/trends_screen.dart';
+import 'package:finance_tracker_mobile/screens/wealth_screen.dart';
 import 'package:finance_tracker_mobile/services/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -51,6 +53,59 @@ void main() {
     await tester.scrollUntilVisible(find.text('Since you started'), 300, scrollable: find.byType(Scrollable).first);
     await tester.scrollUntilVisible(find.text('Average spent a month'), 300, scrollable: find.byType(Scrollable).first);
     expect(find.text('₹50,000'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  Widget app(Widget home) => MultiProvider(
+        providers: [
+          Provider<Services>.value(value: services),
+          ChangeNotifierProvider(create: (_) => AppState(services.auth)),
+        ],
+        child: MaterialApp(home: home),
+      );
+
+  void phone(WidgetTester tester) {
+    tester.view.physicalSize = const Size(1080, 2400);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+  }
+
+  testWidgets('compare months: totals, categories open to subcategories and payees, income', (tester) async {
+    phone(tester);
+    await tester.pumpWidget(app(const CompareMonthsScreen()));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Totals'), findsOneWidget);
+    expect(find.text('Same days only'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Food & Groceries'), 300, scrollable: find.byType(Scrollable).first);
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, -300));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Food & Groceries'));
+    await tester.pumpAndSettle();
+    expect(find.text('Paid to'), findsOneWidget);
+    await tester.tap(find.byTooltip('Swap'));
+    await tester.pumpAndSettle();
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, 3000));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Income'));
+    await tester.pumpAndSettle();
+    expect(find.text('Income by category'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('wealth screen shows net worth over time, health, holdings and accounts', (tester) async {
+    phone(tester);
+    await services.assets.create({'name': 'Nifty fund', 'asset_class': 'MUTUAL_FUND', 'invested_amount': 100000, 'current_value': 130000});
+    await services.assets.create({'name': 'XYZ Ltd', 'asset_class': 'EQUITY', 'invested_amount': 50000, 'current_value': 40000});
+    db.execute("INSERT INTO wealth_snapshots (date, net_worth_minor, assets_minor, liabilities_minor, invested_minor, holdings_minor) VALUES ('2026-01-01', 10000000, 10000000, 0, 0, 0)");
+    await tester.pumpWidget(app(const WealthScreen()));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Net worth over time'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Where your money sits'), 300, scrollable: find.byType(Scrollable).first);
+    await tester.scrollUntilVisible(find.text('Doing best'), 300, scrollable: find.byType(Scrollable).first);
+    await tester.scrollUntilVisible(find.text('Down so far'), 300, scrollable: find.byType(Scrollable).first);
+    await tester.scrollUntilVisible(find.text('Accounts'), 300, scrollable: find.byType(Scrollable).first);
     expect(tester.takeException(), isNull);
   });
 }

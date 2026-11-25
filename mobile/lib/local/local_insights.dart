@@ -9,6 +9,7 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 
 import '../core/format.dart';
+import '../services/errors.dart';
 import '../services/services.dart';
 import 'local_db.dart';
 import 'local_wealth.dart' show LocalAssetsService, LocalSchedulesService;
@@ -43,6 +44,17 @@ class LocalInsightsService implements InsightsService {
   Future<Json> trends() async {
     await _recordWealth();
     return InsightEngine(_db, _now()).trends();
+  }
+
+  @override
+  Future<Json> compareMonths({String? monthA, String? monthB, String type = 'EXPENSE', bool sameDays = false}) async =>
+      InsightEngine(_db, _now()).compareMonths(monthA: monthA, monthB: monthB, type: type, sameDays: sameDays);
+
+  @override
+  Future<Json> wealthOverview() async {
+    await _recordWealth();
+    final summary = await LocalAssetsService(_db).summary();
+    return InsightEngine(_db, _now()).wealthOverview(summary);
   }
 
   /// Today's net-worth reading (replaced if the app is used again today).
@@ -176,7 +188,14 @@ class InsightEngine {
     _budgets(out, flagged);
     _spending(out, flagged);
     _comparedWithLastMonth(out, flagged);
+    _subcategoryRise(out, flagged);
+    _payeeJump(out);
+    _weekends(out);
+    _incomeMissing(out);
+    _uncategorised(out);
+    _cash(out);
     _wealthChange(out);
+    _emergencyCover(out);
     _unusual(out);
     _duplicates(out);
     _bills(out);
@@ -697,6 +716,226 @@ class InsightEngine {
     ));
   }
 
+  // ---- More spending patterns ------------------------------------------------
+
+  /// SQL for the key that groups payments to the same payee.
+  static const _payeeKey = 'COALESCE(merchant_key, lower(trim(COALESCE(merchant, description))))';
+
+  static const _cashWithdrawal = '00000000-0000-0000-0000-000000000034';
+
+  /// One subcategory that grew a lot against the same days of last month.
+  void _subcategoryRise(List<Json> out, Set<String> flagged) {
+    if (today.day < 7) return;
+    Map<String, int> bySub(DateTime from, DateTime to) => {
+          for (final r in _db.query('''
+            SELECT subcategory_id, SUM(amount_minor) AS total FROM transactions
+            WHERE status = 'CONFIRMED' AND type = 'EXPENSE' AND subcategory_id IS NOT NULL AND date >= ? AND date <= ?
+            GROUP BY subcategory_id''', [dateOnly(from), dateOnly(to)]))
+            r['subcategory_id'] as String: r['total'] as int,
+        };
+    final now = bySub(_monthStart, today);
+    final before = bySub(_lastMonth, _sameDayLastMonth);
+    (String, int, int)? best;
+    for (final e in now.entries) {
+      final was = before[e.key] ?? 0;
+      final rise = e.value - was;
+      if (was > 0 && e.value * 2 >= was * 3 && rise >= 10 * _unit && (best == null || rise > best.$2 - best.$3)) best = (e.key, e.value, was);
+    }
+    if (best == null) return;
+    final (id, isNow, was) = best;
+    final r = _db.queryOne(
+        'SELECT s.name, c.id AS cid, c.name AS cname FROM subcategories s JOIN categories c ON c.id = s.category_id WHERE s.id = ?', [id]);
+    if (r == null || flagged.contains(r['cid'])) return;
+    out.add(_insight(
+      'sub-up:$id:${_ym(today)}',
+      'spending',
+      'info',
+      '${r['name']} is up this month',
+      '${_m(isNow)} on ${r['name']} (${r['cname']}) so far, against ${_m(was)} by ${_day(_sameDayLastMonth)}. ${_m(isNow - was)} more.',
+      target: 'transactions',
+    ));
+  }
+
+  /// Paying one place much more often than by this day last month.
+  void _payeeJump(List<Json> out) {
+    if (today.day < 7) return;
+    Map<String, Row> byPayee(DateTime from, DateTime to) => {
+          for (final r in _db.query('''
+            SELECT $_payeeKey AS pkey, MAX(COALESCE(merchant, description)) AS name, COUNT(*) AS n, SUM(amount_minor) AS total
+            FROM transactions WHERE status = 'CONFIRMED' AND type = 'EXPENSE' AND date >= ? AND date <= ?
+            GROUP BY pkey''', [dateOnly(from), dateOnly(to)]))
+            if (r['pkey'] != null) r['pkey'] as String: r,
+        };
+    final now = byPayee(_monthStart, today);
+    final before = byPayee(_lastMonth, _sameDayLastMonth);
+    Row? best;
+    var bestRise = 0;
+    for (final e in now.entries) {
+      final n = e.value['n'] as int, total = e.value['total'] as int;
+      final wasN = (before[e.key]?['n'] as int?) ?? 0, wasTotal = (before[e.key]?['total'] as int?) ?? 0;
+      final rise = total - wasTotal;
+      if (n >= 4 && n * 2 >= wasN * 3 && rise >= 5 * _unit && rise > bestRise) {
+        best = e.value;
+        bestRise = rise;
+      }
+    }
+    if (best == null) return;
+    final was = before[best['pkey']];
+    out.add(_insight(
+      'payee-up:${best['pkey']}:${_ym(today)}',
+      'spending',
+      'info',
+      '${best['name']}: ${best['n']} payments this month',
+      was == null
+          ? '${_m(best['total'] as int)} so far. By ${_day(_sameDayLastMonth)} last month there were none.'
+          : '${_m(best['total'] as int)} so far, against ${_m(was['total'] as int)} (${was['n']} payment${was['n'] == 1 ? '' : 's'}) by ${_day(_sameDayLastMonth)} last month.',
+      target: 'transactions',
+    ));
+  }
+
+  /// Weekends cost clearly more per day than weekdays (last 8 weeks).
+  void _weekends(List<Json> out) {
+    final first = _db.queryOne("SELECT MIN(date) AS d FROM transactions WHERE status = 'CONFIRMED' AND type = 'EXPENSE'")?['d'] as String?;
+    if (first == null) return;
+    final firstDate = DateTime.parse(first);
+    if (firstDate.isAfter(today.subtract(const Duration(days: 28)))) return;
+    final eightWeeks = today.subtract(const Duration(days: 56));
+    final start = firstDate.isAfter(eightWeeks) ? firstDate : eightWeeks;
+    final to = today.subtract(const Duration(days: 1));
+    final r = _db.queryOne('''
+      SELECT COALESCE(SUM(CASE WHEN strftime('%w', date) IN ('0', '6') THEN amount_minor END), 0) AS weekend,
+             COALESCE(SUM(CASE WHEN strftime('%w', date) NOT IN ('0', '6') THEN amount_minor END), 0) AS weekday
+      FROM transactions WHERE status = 'CONFIRMED' AND type = 'EXPENSE' AND date >= ? AND date <= ?''', [dateOnly(start), dateOnly(to)])!;
+    var weekendDays = 0, weekdayDays = 0;
+    for (var d = start; !d.isAfter(to); d = DateTime(d.year, d.month, d.day + 1)) {
+      if (d.weekday >= DateTime.saturday) {
+        weekendDays++;
+      } else {
+        weekdayDays++;
+      }
+    }
+    if (weekendDays < 4 || weekdayDays < 10) return;
+    final weekend = r['weekend'] as int;
+    final perWeekend = weekend ~/ weekendDays, perWeekday = (r['weekday'] as int) ~/ weekdayDays;
+    if (perWeekday <= 0 || perWeekend * 2 < perWeekday * 3 || weekend < 20 * _unit) return;
+    out.add(_insight(
+      'weekend:${_ym(today)}',
+      'spending',
+      'info',
+      'Weekends cost more',
+      'On Saturdays and Sundays you spend about ${_m(perWeekend)} a day, against ${_m(perWeekday)} on other days (last 8 weeks).',
+      target: 'transactions',
+    ));
+  }
+
+  /// Regular income (same payer in each of the last two months) not in yet.
+  void _incomeMissing(List<Json> out) {
+    final last = _lastMonth, before = DateTime(today.year, today.month - 2);
+    final top = _db.queryOne('''
+      SELECT $_payeeKey AS pkey, MAX(COALESCE(merchant, description)) AS name, SUM(amount_minor) AS total, MIN(date) AS first_date
+      FROM transactions WHERE status = 'CONFIRMED' AND type = 'INCOME' AND date >= ? AND date < ?
+      GROUP BY pkey ORDER BY total DESC LIMIT 1''', [dateOnly(last), dateOnly(_monthStart)]);
+    if (top == null || top['pkey'] == null || (top['total'] as int) < 50 * _unit) return;
+    bool seen(DateTime from, DateTime to) =>
+        _db.queryOne('''
+          SELECT 1 AS x FROM transactions WHERE status = 'CONFIRMED' AND type = 'INCOME' AND $_payeeKey = ? AND date >= ? AND date <= ? LIMIT 1''',
+            [top['pkey'], dateOnly(from), dateOnly(to)]) !=
+        null;
+    if (!seen(before, DateTime(before.year, before.month + 1, 0))) return; // not regular
+    final usualDay = DateTime.parse(top['first_date'] as String).day;
+    if (today.day <= usualDay + 3 || seen(_monthStart, today)) return;
+    out.add(_insight(
+      'income-missing:${top['pkey']}:${_ym(today)}',
+      'income',
+      'warning',
+      'No income from ${top['name']} yet',
+      'Last month ${_m(top['total'] as int)} came from ${top['name']} around the ${_ordinal(usualDay)}. Nothing has arrived this month yet. '
+          'If it has, check the review inbox.',
+      target: 'transactions',
+      notify: true,
+    ));
+  }
+
+  /// Payments this month that are in no category (budgets miss them).
+  void _uncategorised(List<Json> out) {
+    final r = _db.queryOne('''
+      SELECT COUNT(*) AS n, COALESCE(SUM(amount_minor), 0) AS total FROM transactions
+      WHERE status = 'CONFIRMED' AND type IN ('EXPENSE', 'INCOME') AND category_id IS NULL AND date >= ? AND date <= ?''',
+        [dateOnly(_monthStart), dateOnly(today)])!;
+    final n = r['n'] as int;
+    if (n < 3) return;
+    out.add(_insight(
+      'uncat:${_ym(today)}',
+      'summary',
+      'info',
+      '$n payments have no category',
+      '${_m(r['total'] as int)} this month is not in any category, so budgets and comparisons leave it out. Tap to sort them.',
+      target: 'transactions',
+    ));
+  }
+
+  /// Cash taken out this month: what is paid in cash is not tracked.
+  void _cash(List<Json> out) {
+    final total = _db.queryOne('''
+      SELECT COALESCE(SUM(amount_minor), 0) AS total FROM transactions
+      WHERE status = 'CONFIRMED' AND type = 'TRANSFER' AND category_id = ? AND date >= ? AND date <= ?''',
+        [_cashWithdrawal, dateOnly(_monthStart), dateOnly(today)])!['total'] as int;
+    if (total < 20 * _unit) return;
+    out.add(_insight(
+      'cash:${_ym(today)}',
+      'spending',
+      'info',
+      '${_m(total)} taken out as cash',
+      'Cash payments are not tracked automatically. Add the big ones in Money so your spending stays right.',
+      target: 'transactions',
+    ));
+  }
+
+  /// Bank balances and cash-like savings, in months of usual spending (the
+  /// average of the last 3 full months that had spending; needs 2).
+  ({int cash, int monthly, double months})? _cover() {
+    final bank = _db.queryOne('''
+      SELECT COALESCE(SUM(CASE WHEN balance_minor > 0 THEN balance_minor END), 0) AS total FROM accounts
+      WHERE is_active = 1 AND account_type IN ('SAVINGS', 'CURRENT', 'WALLET')''')!['total'] as int;
+    final liquid =
+        _db.queryOne("SELECT COALESCE(SUM(current_value_minor), 0) AS total FROM assets WHERE asset_class = 'CASH_EQUIVALENT'")!['total'] as int;
+    final spends = [
+      for (var i = 1; i <= 3; i++) _totals(DateTime(today.year, today.month - i)).expense,
+    ].where((e) => e > 0).toList();
+    if (spends.length < 2) return null;
+    final monthly = spends.reduce((a, b) => a + b) ~/ spends.length;
+    if (monthly <= 0) return null;
+    final cash = bank + liquid;
+    return (cash: cash, monthly: monthly, months: cash / monthly);
+  }
+
+  void _emergencyCover(List<Json> out) {
+    final c = _cover();
+    if (c == null) return;
+    final months = c.months.toStringAsFixed(c.months < 10 ? 1 : 0);
+    if (c.months < 3) {
+      out.add(_insight(
+        'emergency:${_ym(today)}',
+        'wealth',
+        c.months < 1 ? 'warning' : 'info',
+        'Savings cover $months months of spending',
+        'Your bank balances and cash-like savings (${_m(c.cash)}) would last about $months months at your usual ${_m(c.monthly)} a month. '
+            'A cushion of 3 to 6 months is safer.',
+        target: 'wealth',
+      ));
+    } else if (c.months >= 6) {
+      out.add(_insight(
+        'emergency:${_ym(today)}',
+        'wealth',
+        'good',
+        'A strong safety cushion',
+        'Your bank balances and cash-like savings (${_m(c.cash)}) would cover about $months months of spending. '
+            'Money beyond 6 months could be put to work in investments.',
+        target: 'wealth',
+      ));
+    }
+  }
+
   // ---- Numbers for the comparison screens ----------------------------------
 
   static double _amount(int minor) => fromMinor(minor);
@@ -786,6 +1025,210 @@ class InsightEngine {
         'now': reading(_snapshot('WHERE date <= ? ORDER BY date DESC', [dateOnly(today)])),
       },
       'highlights': _highlights(lastMonth, lastMonthEnd),
+    };
+  }
+
+  // ---- Compare any two months ----------------------------------------------
+
+  static DateTime _parseMonth(String ym) {
+    final m = RegExp(r'^(\d{4})-(\d{2})$').firstMatch(ym);
+    if (m == null) throw ValidationException('month', 'Use a month like 2026-11');
+    return DateTime(int.parse(m.group(1)!), int.parse(m.group(2)!));
+  }
+
+  Json compareMonths({String? monthA, String? monthB, String type = 'EXPENSE', bool sameDays = false}) {
+    if (type != 'EXPENSE' && type != 'INCOME') throw ValidationException('type', 'Choose spending or income');
+    final current = _ym(today);
+    final months = {
+      current,
+      for (final r in _db.query("SELECT DISTINCT substr(date, 1, 7) AS m FROM transactions WHERE status = 'CONFIRMED'")) r['m'] as String,
+    }.toList()
+      ..sort((a, b) => b.compareTo(a));
+    final a = _parseMonth(monthA ?? current), b = _parseMonth(monthB ?? _ym(_lastMonth));
+    final cutDay = sameDays && (_ym(a) == current || _ym(b) == current) ? today.day : null;
+
+    // The last day counted in a month: today for this month, the cut day
+    // when comparing the same days, otherwise the month's last day.
+    DateTime endOf(DateTime m) {
+      final last = DateTime(m.year, m.month + 1, 0);
+      var end = cutDay == null ? last : DateTime(m.year, m.month, cutDay < last.day ? cutDay : last.day);
+      if (end.isAfter(today)) end = today;
+      return end;
+    }
+
+    Json side(DateTime m) {
+      final end = endOf(m);
+      final full = DateTime(m.year, m.month + 1, 0);
+      return {
+        'month': _ym(m),
+        'label': DateFormat('MMM yyyy').format(m),
+        'from': dateOnly(m),
+        'to': dateOnly(end),
+        'partial': end.isBefore(full),
+        ..._totalsJson(m.isAfter(today) ? (income: 0, expense: 0) : _between(m, end)),
+      };
+    }
+
+    final sideA = side(a), sideB = side(b);
+    final cats = <String?, _Group>{};
+    void collect(DateTime m, bool isA) {
+      if (m.isAfter(today)) return;
+      for (final r in _db.query('''
+        SELECT category_id, subcategory_id, $_payeeKey AS pkey, MAX(COALESCE(merchant, description)) AS name,
+               SUM(amount_minor) AS total, COUNT(*) AS n
+        FROM transactions WHERE status = 'CONFIRMED' AND type = ? AND date >= ? AND date <= ?
+        GROUP BY category_id, subcategory_id, pkey''', [type, dateOnly(m), dateOnly(endOf(m))])) {
+        final total = r['total'] as int, n = r['n'] as int;
+        final g = cats.putIfAbsent(r['category_id'] as String?, _Group.new);
+        g.pair.add(isA, total, n);
+        g.subs.putIfAbsent(r['subcategory_id'] as String?, _Pair.new).add(isA, total, n);
+        final key = (r['pkey'] as String?) ?? '';
+        final p = g.payees.putIfAbsent(key, _Pair.new)..add(isA, total, n);
+        p.name ??= r['name'] as String?;
+      }
+    }
+
+    collect(a, true);
+    collect(b, false);
+    final catRows = {for (final r in _db.query('SELECT id, name, color FROM categories')) r['id'] as String: r};
+    final subNames = {for (final r in _db.query('SELECT id, name FROM subcategories')) r['id'] as String: r['name'] as String};
+    int biggest(Json x) => (x['a_minor'] as int) > (x['b_minor'] as int) ? x['a_minor'] as int : x['b_minor'] as int;
+    List<Json> sorted(List<Json> rows) => rows
+      ..sort((x, y) => biggest(y).compareTo(biggest(x)))
+      ..forEach((r) => r
+        ..remove('a_minor')
+        ..remove('b_minor'));
+
+    final categories = [
+      for (final MapEntry(key: id, value: g) in cats.entries)
+        {
+          'id': id,
+          'name': id == null ? 'No category' : (catRows[id]?['name'] ?? 'Other'),
+          'color': id == null ? null : catRows[id]?['color'],
+          ...g.pair.json(),
+          'subcategories': sorted([
+            for (final MapEntry(key: sid, value: s) in g.subs.entries)
+              {'id': sid, 'name': sid == null ? 'No subcategory' : (subNames[sid] ?? 'Other'), ...s.json()},
+          ]),
+          'payees': sorted([
+            for (final p in g.payees.values) {'name': p.name ?? 'Unknown', ...p.json()},
+          ]).take(8).toList(),
+        },
+    ];
+    return {
+      'type': type,
+      'same_days': cutDay != null,
+      'cut_day': cutDay,
+      'available': [for (final m in months) {'month': m, 'label': DateFormat('MMM yyyy').format(_parseMonth(m))}],
+      'a': sideA,
+      'b': sideB,
+      'categories': sorted(categories),
+    };
+  }
+
+  // ---- More for the Wealth screen ---------------------------------------------
+
+  static const _readyClasses = {'CASH_EQUIVALENT', 'EQUITY', 'MUTUAL_FUND', 'CRYPTO', 'COMMODITY_GOLD'};
+
+  Json wealthOverview(Json summary) {
+    Json reading(Row r) => {
+          'date': r['date'],
+          'net_worth': _amount(r['net_worth_minor'] as int),
+          'assets': _amount(r['assets_minor'] as int),
+          'liabilities': _amount(r['liabilities_minor'] as int),
+        };
+    final history = [
+      for (final r in _db.query('SELECT * FROM wealth_snapshots WHERE date >= ? AND date <= ? ORDER BY date',
+          [dateOnly(today.subtract(const Duration(days: 365))), dateOnly(today)]))
+        reading(r),
+    ];
+    final now = _snapshot('WHERE date <= ? ORDER BY date DESC', [dateOnly(today)]);
+    Json? since(Row? then) => then == null || now == null || then['date'] == now['date']
+        ? null
+        : {'date': then['date'], 'from': _amount(then['net_worth_minor'] as int), 'to': _amount(now['net_worth_minor'] as int)};
+    Row? before(int days) => _snapshot('WHERE date <= ? ORDER BY date DESC', [dateOnly(today.subtract(Duration(days: days)))]);
+
+    // Accounts and where the money sits.
+    final accounts = [
+      for (final r in _db.query('SELECT name, account_type, balance_minor FROM accounts WHERE is_active = 1 ORDER BY balance_minor DESC'))
+        {'name': r['name'], 'type': r['account_type'], 'balance': _amount(r['balance_minor'] as int)},
+    ];
+    var bank = 0.0, locked = 0.0, ready = 0.0;
+    for (final a in accounts) {
+      final balance = a['balance'] as double;
+      if (balance <= 0) continue;
+      if (a['type'] == 'FIXED_DEPOSIT') {
+        locked += balance;
+      } else {
+        bank += balance;
+      }
+    }
+    final classes = (summary['asset_classes'] as List).cast<Json>();
+    final holdings = <Json>[];
+    var investments = 0.0;
+    for (final c in classes) {
+      final value = toDouble(c['total_current_value']);
+      investments += value;
+      if (_readyClasses.contains(c['asset_class'])) {
+        ready += value;
+      } else {
+        locked += value;
+      }
+      holdings.addAll((c['items'] as List).cast<Json>());
+    }
+
+    // Best and worst performers (by % gain on what was put in).
+    final priced = holdings.where((h) => toDouble(h['invested_amount']) > 0).toList()
+      ..sort((x, y) => toDouble(y['pnl_percentage']).compareTo(toDouble(x['pnl_percentage'])));
+    Json perf(Json h) => {
+          'name': h['name'],
+          'asset_class': h['asset_class'],
+          'invested': toDouble(h['invested_amount']),
+          'value': toDouble(h['current_value']),
+          'pnl': toDouble(h['pnl']),
+          'pnl_pct': toDouble(h['pnl_percentage']),
+        };
+    final gainers = [for (final h in priced.where((h) => toDouble(h['pnl']) > 0).take(3)) perf(h)];
+    final losers = [for (final h in priced.reversed.where((h) => toDouble(h['pnl']) < 0).take(3)) perf(h)];
+
+    Json? concentration;
+    if (holdings.length >= 2 && investments > 0) {
+      final top = holdings.reduce((x, y) => toDouble(x['current_value']) >= toDouble(y['current_value']) ? x : y);
+      concentration = {'name': top['name'], 'value': toDouble(top['current_value']), 'share': toDouble(top['current_value']) / investments * 100};
+    }
+
+    final cover = _cover();
+    final incomes = [
+      for (var i = 1; i <= 3; i++) _totals(DateTime(today.year, today.month - i)).income,
+    ].where((e) => e > 0).toList();
+    final monthlyIncome = incomes.isEmpty ? 0.0 : _amount(incomes.reduce((x, y) => x + y) ~/ incomes.length);
+    final assets = toDouble(summary['total_assets_current']);
+    final liabilities = toDouble(summary['total_liabilities_outstanding']);
+    final emi = toDouble(summary['total_monthly_emi']);
+    final owedOnCards = accounts.where((a) => a['type'] == 'CREDIT_CARD' && (a['balance'] as double) < 0).fold<double>(0, (s, a) => s - (a['balance'] as double));
+
+    return {
+      'history': history,
+      'changes': {
+        'month': since(before(30)),
+        'quarter': since(before(90)),
+        'start': since(_snapshot('ORDER BY date ASC')),
+      },
+      'accounts': accounts,
+      'split': {'bank': bank, 'ready': ready, 'locked': locked, 'investments': investments},
+      'emergency': cover == null ? null : {'cash': _amount(cover.cash), 'monthly_spend': _amount(cover.monthly), 'months': cover.months},
+      'debt': {
+        'liabilities': liabilities,
+        'assets': assets,
+        'debt_to_assets': assets > 0 ? liabilities / assets * 100 : null,
+        'emi': emi,
+        'monthly_income': monthlyIncome,
+        'emi_to_income': monthlyIncome > 0 ? emi / monthlyIncome * 100 : null,
+        'cards_owed': owedOnCards,
+      },
+      'gainers': gainers,
+      'losers': losers,
+      'concentration': concentration,
     };
   }
 
@@ -898,4 +1341,29 @@ class InsightEngine {
     out.sort((a, b) => (a['at'] as String).compareTo(b['at'] as String));
     return out;
   }
+}
+
+/// Amounts (minor units) and payment counts for month A and month B.
+class _Pair {
+  int a = 0, b = 0, countA = 0, countB = 0;
+  String? name;
+
+  void add(bool isA, int total, int n) {
+    if (isA) {
+      a += total;
+      countA += n;
+    } else {
+      b += total;
+      countB += n;
+    }
+  }
+
+  Json json() => {'a': fromMinor(a), 'b': fromMinor(b), 'count_a': countA, 'count_b': countB, 'a_minor': a, 'b_minor': b};
+}
+
+/// One category in a month comparison, with its subcategories and payees.
+class _Group {
+  final pair = _Pair();
+  final subs = <String?, _Pair>{};
+  final payees = <String, _Pair>{};
 }

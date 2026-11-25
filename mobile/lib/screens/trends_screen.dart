@@ -8,6 +8,7 @@ import '../core/theme.dart';
 import '../services/services.dart';
 import '../widgets/common.dart';
 import '../widgets/transaction_tile.dart' show parseHexColor;
+import 'compare_screen.dart';
 import 'insights_screen.dart' show maskAmounts;
 
 /// "▲ 12%" / "▼ 8%" between two amounts, coloured by whether the change is
@@ -34,11 +35,15 @@ class TrendsScreen extends StatefulWidget {
 class _TrendsScreenState extends State<TrendsScreen> {
   bool _fullLastMonth = false;
 
+  void _openCompare(BuildContext context) => Navigator.push(context, MaterialPageRoute(builder: (_) => const CompareMonthsScreen()));
+
   @override
   Widget build(BuildContext context) {
     final service = context.services.insights!;
     return Scaffold(
-      appBar: AppBar(title: const Text('Trends & comparisons')),
+      appBar: AppBar(title: const Text('Trends & comparisons'), actions: [
+        IconButton(tooltip: 'Compare months', onPressed: () => _openCompare(context), icon: const Icon(Icons.compare_arrows)),
+      ]),
       body: AsyncView<Json>(
         load: service.trends,
         builder: (context, t, reload) {
@@ -72,6 +77,12 @@ class _TrendsScreenState extends State<TrendsScreen> {
                 ),
               ),
               _CategorySplitCard(trends: t, fullLastMonth: _fullLastMonth),
+              const SizedBox(height: 8),
+              FilledButton.tonalIcon(
+                onPressed: () => _openCompare(context),
+                icon: const Icon(Icons.compare_arrows),
+                label: const Text('Compare any two months in detail'),
+              ),
               if (highlights.isNotEmpty) ...[
                 SectionHeader('${t['this_label']} at a glance'),
                 StatGrid(children: [

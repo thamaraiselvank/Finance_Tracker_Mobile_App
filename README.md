@@ -119,6 +119,22 @@ In this mode:
   - Parsing is ported from `backend/app/services/importer.py` and checked
     against it (`test/parity/import_parity_test.dart`), with a few
     deliberate fixes listed at the top of `lib/import/statement_parser.dart`.
+- **Trends & comparisons:** this month against last month, six months, and
+  **Compare months**: any two months side by side for spending or income,
+  each category opening to its subcategories and the places paid most
+  (optionally only the same days of both months).
+- **Smart insights (rules, no AI):** budgets, spending against the usual,
+  a subcategory or a payee much higher than last month, weekends that cost
+  more, regular income (like salary) that is late, payments with no
+  category, cash withdrawals, unusual or double payments, bills, renewals,
+  goals, savings cushion in months of spending, net worth change.
+- **Wealth:** besides holdings and allocation, net worth over time (one
+  reading a day), safety cushion, debt against assets, EMIs against income,
+  where the money sits (bank / quick to sell / locked in), best and worst
+  holdings, a note when one holding is a big share, and account balances.
+- **Read older SMS** (Review inbox → ⋮) also brings back payments that were
+  deleted from Money or ignored by hand. Payments still in Money or waiting
+  in the inbox are never listed twice; ones an "Ignore" rule hides stay hidden.
 - **Not moved yet** (shows "not in the offline version yet"): the AI chat.
   Local data is never mixed with server data.
 - Every ported calculation is checked against the Python backend with
