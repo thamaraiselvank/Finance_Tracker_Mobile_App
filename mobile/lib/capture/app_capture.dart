@@ -172,7 +172,7 @@ class _SharedPaymentScreenState extends State<SharedPaymentScreen> {
         _parsed = parsed;
         message = CapturedMessage(source: 'SHARE', sender: 'SHARE', body: _readText, receivedAt: DateTime.now(), parsed: parsed);
       } else {
-        _error = 'The shared file could not be opened.';
+        _error = 'The shared image could not be opened. Try taking a screenshot of the payment screen and sharing that.';
         return _finish(_Outcome.error);
       }
       final result = await widget.capture.ingest([message]);
@@ -183,6 +183,11 @@ class _SharedPaymentScreenState extends State<SharedPaymentScreen> {
       if (((result['auto_added'] as int?) ?? 0) > 0) return _finish(_Outcome.autoAdded);
       if (((result['auto_ignored'] as int?) ?? 0) > 0) return _finish(_Outcome.autoIgnored);
       _finish(_Outcome.duplicate);
+    } on PlatformException catch (e) {
+      // Native errors (e.g. ML Kit) carry a Java stack trace; don't show it.
+      debugPrint('Share capture failed: $e');
+      _error = 'This image could not be read. Try taking a screenshot of the payment screen and sharing that.';
+      _finish(_Outcome.error);
     } catch (e) {
       _error = e.toString();
       _finish(_Outcome.error);

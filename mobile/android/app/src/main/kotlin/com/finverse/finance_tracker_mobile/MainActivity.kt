@@ -1,6 +1,9 @@
 package com.finverse.finance_tracker_mobile
 
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -94,15 +97,53 @@ class MainActivity : FlutterFragmentActivity() {
         if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
         else intent.getParcelableExtra(Intent.EXTRA_STREAM) as? Uri
 
+    /**
+     * Decodes the shared image here and saves it as a plain JPEG, so ML Kit
+     * always gets a file it can open. (Copying the raw bytes failed for some
+     * apps' shares: ML Kit could not decode them and crashed with a null
+     * bitmap.) Very large images are scaled down to keep memory in check.
+     */
     private fun copyToCache(uri: Uri): String {
         val dir = File(cacheDir, "shared").apply { mkdirs() }
         // Keep only the latest few shared images.
         dir.listFiles()?.sortedBy { it.lastModified() }?.dropLast(4)?.forEach { it.delete() }
-        val file = File(dir, "share_${System.currentTimeMillis()}.img")
-        contentResolver.openInputStream(uri).use { input ->
-            requireNotNull(input) { "Cannot open shared image" }
-            file.outputStream().use { input.copyTo(it) }
+        val bitmap = decode(uri) ?: throw IllegalStateException("Cannot decode shared image")
+        val file = File(dir, "share_${System.currentTimeMillis()}.jpg")
+        try {
+            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it) }
+        } finally {
+            bitmap.recycle()
         }
         return file.absolutePath
+    }
+
+    private fun decode(uri: Uri): Bitmap? {
+        if (Build.VERSION.SDK_INT >= 28) {
+            try {
+                val source = ImageDecoder.createSource(contentResolver, uri)
+                return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    // Software bitmap so it can be compressed to JPEG.
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val longest = maxOf(info.size.width, info.size.height)
+                    if (longest > MAX_SIDE) {
+                        val scale = MAX_SIDE.toFloat() / longest
+                        decoder.setTargetSize((info.size.width * scale).toInt().coerceAtLeast(1), (info.size.height * scale).toInt().coerceAtLeast(1))
+                    }
+                }
+            } catch (e: Exception) {
+                // Fall back to BitmapFactory below.
+            }
+        }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / sample > MAX_SIDE) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
+    }
+
+    private companion object {
+        /** Longest side kept for OCR; plenty for a payment screenshot. */
+        const val MAX_SIDE = 2400
     }
 }
