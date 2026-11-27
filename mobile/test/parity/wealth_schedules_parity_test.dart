@@ -82,6 +82,14 @@ void main() {
         meta == null ? '{}' : (meta is String ? meta : jsonEncode(meta)), h['created_at'], h['updated_at'],
       ]);
     }
-    expectMatchesPython(await LocalAssetsService(db).summary(), fixture['output']);
+    // Income from holdings is phone-only (not in the backend): leave it out.
+    final summary = await LocalAssetsService(db).summary();
+    summary.remove('passive_income');
+    for (final c in (summary['asset_classes'] as List).cast<Map>()) {
+      for (final i in (c['items'] as List).cast<Map>()) {
+        i.remove('income');
+      }
+    }
+    expectMatchesPython(summary, fixture['output']);
   });
 }

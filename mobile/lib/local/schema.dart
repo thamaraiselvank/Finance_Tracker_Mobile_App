@@ -15,7 +15,7 @@ import '../capture/rules.dart';
 ///  * Booleans are INTEGER 0/1.
 ///  * There is no users table or user_id column: the phone has one owner.
 ///    The single `profile` row replaces `users`.
-const List<String> migrations = [_v1, _v2, _v3, _v4, _v5, _v6];
+const List<String> migrations = [_v1, _v2, _v3, _v4, _v5, _v6, _v7];
 
 void migrate(Database db) {
   final current = db.select('PRAGMA user_version').first.values.first as int;
@@ -342,6 +342,28 @@ CREATE TABLE wealth_snapshots (
   invested_minor INTEGER NOT NULL,
   holdings_minor INTEGER NOT NULL
 );
+''';
+
+/// v7: goals for things to buy (car, bike, home, gadgets, wedding, gold),
+/// and a spending category for big purchases.
+///
+/// The goals table's CHECK only allows the backend's goal types, and SQLite
+/// can't change a CHECK without rebuilding the table (unsafe here because of
+/// ON DELETE CASCADE contributions). So the new kinds are saved as
+/// goal_type 'OTHER' plus goal_kind; the service reports goal_kind as the type.
+const _v7 = '''
+ALTER TABLE goals ADD COLUMN goal_kind TEXT;
+
+INSERT OR IGNORE INTO categories (id, name, type, icon, color, is_system, created_at) VALUES
+  ('00000000-0000-0000-0000-000000000022', 'Big purchases', 'EXPENSE', 'Car', '#0F766E', 1, '2026-11-27T00:00:00.000Z');
+
+INSERT OR IGNORE INTO subcategories (id, category_id, name, created_at) VALUES
+  ('00000000-0000-0000-0001-000000000101', '00000000-0000-0000-0000-000000000022', 'Car', '2026-11-27T00:00:00.000Z'),
+  ('00000000-0000-0000-0001-000000000102', '00000000-0000-0000-0000-000000000022', 'Bike / scooter', '2026-11-27T00:00:00.000Z'),
+  ('00000000-0000-0000-0001-000000000103', '00000000-0000-0000-0000-000000000022', 'Phone, laptop & gadgets', '2026-11-27T00:00:00.000Z'),
+  ('00000000-0000-0000-0001-000000000104', '00000000-0000-0000-0000-000000000022', 'Furniture & appliances', '2026-11-27T00:00:00.000Z'),
+  ('00000000-0000-0000-0001-000000000105', '00000000-0000-0000-0000-000000000022', 'Gold & jewellery', '2026-11-27T00:00:00.000Z'),
+  ('00000000-0000-0000-0001-000000000106', '00000000-0000-0000-0000-000000000022', 'House / land', '2026-11-27T00:00:00.000Z');
 ''';
 
 /// Fills the v5 match columns for payments captured before v5.

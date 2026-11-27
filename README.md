@@ -132,6 +132,19 @@ In this mode:
   reading a day), safety cushion, debt against assets, EMIs against income,
   where the money sits (bank / quick to sell / locked in), best and worst
   holdings, a note when one holding is a big share, and account balances.
+- **Passive income from holdings:** a holding can pay a dividend, interest
+  or rent (every month, 3 months, 6 months or year). Wealth shows the
+  expected income a year and a month, what came in this year, and payouts
+  that are due. Each payout can go into Money automatically on its date.
+- **Review inbox in bulk:** Ignore all, Add all, or long-press / "Choose" to
+  tick several payments and add or ignore them together. Undo messages go
+  away after two seconds.
+- **Goals:** goals for things to buy (car, bike, home, gadget, wedding,
+  gold), and a monthly tracker on each goal: this month's saving against the
+  plan, the last six months as saved / short / missed, and a streak.
+- **Charts:** Money's "Where the money went" opens a category into its
+  subcategories; net worth over time has 1M / 3M / 6M / 1Y / All and an
+  assets-and-debts view; every calculator draws charts and updates while typing.
 - **Read older SMS** (Review inbox → ⋮) also brings back payments that were
   deleted from Money or ignored by hand. Payments still in Money or waiting
   in the inbox are never listed twice; ones an "Ignore" rule hides stay hidden.

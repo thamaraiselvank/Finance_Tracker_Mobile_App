@@ -79,6 +79,66 @@ void main() {
     expect(find.textContaining('You reviewed 2 payments'), findsOneWidget);
   });
 
+  testWidgets('Ignore all clears the inbox; the message goes away by itself and Undo brings them back', (tester) async {
+    await services.accounts.create({'name': 'HDFC', 'account_type': 'SAVINGS', 'balance': 1000});
+    await services.capture!.ingest([
+      for (var i = 0; i < 3; i++)
+        CapturedMessage(source: 'UPI_NOTIFICATION', sender: 'GPAY', body: 'You paid ₹${10 + i}.00 to Shop$i', receivedAt: t0.add(Duration(minutes: i))),
+    ]);
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Ignore all'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ignore all 3?'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, 'Ignore all'));
+    await tester.pumpAndSettle();
+    expect(find.text('All caught up'), findsOneWidget);
+    expect(find.text('Ignored 3 · not counted'), findsOneWidget);
+    expect(await services.capture!.pendingCount(), 0);
+
+    await tester.tap(find.text('Undo'));
+    await tester.pumpAndSettle();
+    expect(await services.capture!.pendingCount(), 3);
+    expect(find.text('3 to review'), findsOneWidget);
+
+    // Messages with Undo disappear after a couple of seconds.
+    await tester.drag(find.text('Shop1'), const Offset(-600, 0));
+    await tester.pumpAndSettle();
+    expect(find.text('Ignored · not counted'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+    await tester.pumpAndSettle();
+    expect(find.text('Ignored · not counted'), findsNothing);
+  });
+
+  testWidgets('long-press to choose several, then add or ignore the chosen ones', (tester) async {
+    await services.accounts.create({'name': 'HDFC', 'account_type': 'SAVINGS', 'balance': 1000});
+    await services.capture!.ingest([
+      for (var i = 0; i < 3; i++)
+        CapturedMessage(source: 'UPI_NOTIFICATION', sender: 'GPAY', body: 'You paid ₹${10 + i}.00 to Shop$i', receivedAt: t0.add(Duration(minutes: i))),
+    ]);
+    await tester.pumpWidget(app());
+    await tester.pumpAndSettle();
+
+    await tester.longPress(find.text('Shop0'));
+    await tester.pumpAndSettle();
+    expect(find.text('1 chosen'), findsOneWidget);
+    await tester.tap(find.text('Shop2'));
+    await tester.pumpAndSettle();
+    expect(find.text('2 chosen'), findsOneWidget);
+    await tester.tap(find.text('Add 2'));
+    await tester.pumpAndSettle();
+    expect(find.text('Added 2 to Money'), findsOneWidget);
+    expect((await services.accounts.list()).single['balance'], 1000.0 - 10 - 12);
+    expect(find.text('2 done · 1 left'), findsOneWidget);
+
+    await tester.longPress(find.text('Shop1'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Ignore 1'));
+    await tester.pumpAndSettle();
+    expect(find.text('All caught up'), findsOneWidget);
+  });
+
   testWidgets('free version stops at the monthly limit of automatic payments', (tester) async {
     await services.accounts.create({'name': 'HDFC', 'account_type': 'SAVINGS', 'balance': 10000});
     final now = DateTime.now();

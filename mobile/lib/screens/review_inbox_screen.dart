@@ -18,7 +18,8 @@ import 'capture_rules_screen.dart';
 ///
 /// Swipe right = add to Money, swipe left = ignore, tap = edit. Tapping the
 /// category opens "What is this payment?", which can also teach Finverse to
-/// treat every payment like it the same way.
+/// treat every payment like it the same way. Long-press (or "Select") picks
+/// several payments to add or ignore together; "Ignore all" clears the inbox.
 class ReviewInboxScreen extends StatefulWidget {
   const ReviewInboxScreen({super.key});
 
@@ -33,6 +34,10 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
   String? _error;
   bool _confirmingAll = false;
   SmsSync? _sync;
+
+  /// Choosing several payments at once (tick boxes on the cards).
+  bool _selecting = false;
+  final _selected = <String>{};
 
   /// Reviewed since the screen opened, for the progress bar.
   int _reviewed = 0;
@@ -73,6 +78,7 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
       if (!mounted) return;
       setState(() {
         _items = r[0];
+        _selected.retainAll(r[0].map((i) => i['id'] as String));
         _accounts = r[1].where((a) => a['is_active'] != false).toList();
         _categories = r[2];
         _error = null;
@@ -83,22 +89,29 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     }
   }
 
-  void _snack(String message, {String? undoId}) {
+  /// A short message that goes away by itself after two seconds, even when
+  /// it has an Undo button (Flutter keeps those on screen unless told not to).
+  void _snack(String message, {String? undoId, List<String>? undoIds}) {
     if (!mounted) return;
+    final ids = undoIds ?? [?undoId];
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(
         content: Text(message),
-        action: undoId == null ? null : SnackBarAction(label: 'Undo', onPressed: () => _undo(undoId)),
+        duration: const Duration(seconds: 2),
+        persist: false,
+        action: ids.isEmpty ? null : SnackBarAction(label: 'Undo', onPressed: () => _undo(ids)),
       ));
   }
 
-  Future<void> _undo(String id) async {
-    try {
-      await _capture.reopen(id);
-      if (_reviewed > 0) _reviewed--;
-    } catch (e) {
-      if (mounted) context.showSnack(e.toString(), error: true);
+  Future<void> _undo(List<String> ids) async {
+    for (final id in ids) {
+      try {
+        await _capture.reopen(id);
+        if (_reviewed > 0) _reviewed--;
+      } catch (e) {
+        if (mounted) context.showSnack(e.toString(), error: true);
+      }
     }
     await _load();
   }
@@ -175,25 +188,113 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     setState(() => d.reached ? _armed.add(item['id'] as String) : _armed.remove(item['id']));
   }
 
-  Future<void> _confirmAllReady() async {
-    final ready = (_items ?? []).where((i) => i['account_id'] != null).toList();
-    if (ready.isEmpty || !await _mayAdd(ready.length) || !mounted) return;
-    setState(() => _confirmingAll = true);
-    var failed = 0;
-    for (final item in ready) {
-      try {
-        await _capture.confirm(item['id'] as String);
-      } catch (_) {
-        failed++;
+  /// "Add all": every payment that already has an account.
+  Future<void> _confirmAllReady() => _addMany(List<Json>.from(_items ?? const []));
+
+  // ---- choosing several ---------------------------------------------------
+
+  void _startSelecting([String? id]) {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _selecting = true;
+      _selected.clear();
+      if (id != null) _selected.add(id);
+    });
+  }
+
+  void _stopSelecting() => setState(() {
+        _selecting = false;
+        _selected.clear();
+      });
+
+  void _toggle(String id) => setState(() => _selected.contains(id) ? _selected.remove(id) : _selected.add(id));
+
+  void _toggleAll() {
+    final all = (_items ?? []).map((i) => i['id'] as String).toSet();
+    setState(() {
+      if (_selected.length == all.length) {
+        _selected.clear();
+      } else {
+        _selected
+          ..clear()
+          ..addAll(all);
       }
+    });
+  }
+
+  List<Json> get _chosen => (_items ?? []).where((i) => _selected.contains(i['id'])).toList();
+
+  /// Ignores [items] together, with one Undo for all of them.
+  Future<void> _ignoreMany(List<Json> items) async {
+    if (items.isEmpty) return;
+    setState(() => _confirmingAll = true);
+    final done = <String>[];
+    for (final item in items) {
+      try {
+        await _capture.ignore(item['id'] as String);
+        done.add(item['id'] as String);
+      } catch (_) {}
     }
     if (!mounted) return;
     setState(() {
       _confirmingAll = false;
-      _reviewed += ready.length - failed;
+      _reviewed += done.length;
+      _selecting = false;
+      _selected.clear();
     });
     await _load();
-    if (mounted) context.showSnack(failed == 0 ? 'Added ${ready.length} to Money' : 'Added ${ready.length - failed}; $failed need attention');
+    _snack('Ignored ${done.length} · not counted', undoIds: done);
+  }
+
+  /// "Ignore all": asks first, since it clears the whole inbox.
+  Future<void> _ignoreAll() async {
+    final items = List<Json>.from(_items ?? const []);
+    if (items.isEmpty) return;
+    final ok = await confirmDialog(
+      context,
+      title: 'Ignore all ${items.length}?',
+      message: 'They will not be counted in Money. You can tap Undo right after, '
+          'and "Read older SMS" can bring them back later.',
+      confirmLabel: 'Ignore all',
+    );
+    if (ok && mounted) await _ignoreMany(items);
+  }
+
+  /// Adds the chosen payments. Ones with no account stay, to choose one.
+  Future<void> _addMany(List<Json> items) async {
+    final ready = items.where((i) => i['account_id'] != null).toList();
+    final waiting = items.length - ready.length;
+    if (ready.isEmpty) {
+      context.showSnack('Choose an account for ${waiting == 1 ? 'this payment' : 'these payments'} first (tap "Choose account").');
+      return;
+    }
+    if (!await _mayAdd(ready.length) || !mounted) return;
+    setState(() => _confirmingAll = true);
+    final done = <String>[];
+    for (final item in ready) {
+      try {
+        await _capture.confirm(item['id'] as String);
+        done.add(item['id'] as String);
+      } catch (_) {}
+    }
+    if (!mounted) return;
+    HapticFeedback.lightImpact();
+    setState(() {
+      _confirmingAll = false;
+      _reviewed += done.length;
+      _selecting = false;
+      _selected.clear();
+    });
+    await _load();
+    final failed = ready.length - done.length;
+    _snack(
+      [
+        'Added ${done.length} to Money',
+        if (waiting > 0) '$waiting need an account',
+        if (failed > 0) '$failed could not be added',
+      ].join(' · '),
+      undoIds: done,
+    );
   }
 
   /// Returns the chosen account id (also saved on the item), or null.
@@ -275,20 +376,60 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
     final readyCount = (items ?? []).where((i) => i['account_id'] != null).length;
     final theme = Theme.of(context);
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Review inbox'),
-        actions: [
-          if (readyCount > 1)
-            IconButton(
-              tooltip: 'Add all with an account',
-              onPressed: _confirmingAll ? null : _confirmAllReady,
-              icon: _confirmingAll
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                  : const Icon(Icons.done_all),
+      appBar: _selecting
+          ? AppBar(
+              leading: IconButton(tooltip: 'Stop choosing', onPressed: _stopSelecting, icon: const Icon(Icons.close)),
+              title: Text(_selected.isEmpty ? 'Choose payments' : '${_selected.length} chosen'),
+              actions: [
+                TextButton(
+                  onPressed: (items ?? []).isEmpty ? null : _toggleAll,
+                  child: Text(_selected.length == (items ?? []).length && _selected.isNotEmpty ? 'Clear' : 'All'),
+                ),
+              ],
+            )
+          : AppBar(
+              title: const Text('Review inbox'),
+              actions: [
+                if (_confirmingAll)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 14),
+                    child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                  ),
+                if ((items ?? []).length > 1)
+                  IconButton(tooltip: 'Choose several', onPressed: _confirmingAll ? null : _startSelecting, icon: const Icon(Icons.checklist)),
+                IconButton(tooltip: 'Auto-categorise rules', onPressed: _openRules, icon: const Icon(Icons.auto_awesome_outlined)),
+                if ((items ?? []).isNotEmpty)
+                  PopupMenuButton<String>(
+                    enabled: !_confirmingAll,
+                    onSelected: (v) => switch (v) {
+                      'add' => _confirmAllReady(),
+                      'ignore' => _ignoreAll(),
+                      _ => _startSelecting(),
+                    },
+                    itemBuilder: (_) => [
+                      if (readyCount > 0)
+                        PopupMenuItem(
+                          value: 'add',
+                          child: ListTile(leading: const Icon(Icons.done_all), title: Text('Add all ($readyCount)'), contentPadding: EdgeInsets.zero),
+                        ),
+                      PopupMenuItem(
+                        value: 'ignore',
+                        child: ListTile(leading: const Icon(Icons.do_not_disturb_on_outlined), title: Text('Ignore all (${items!.length})'), contentPadding: EdgeInsets.zero),
+                      ),
+                      const PopupMenuItem(
+                        value: 'select',
+                        child: ListTile(leading: Icon(Icons.checklist), title: Text('Choose several…'), contentPadding: EdgeInsets.zero),
+                      ),
+                    ],
+                  ),
+              ],
             ),
-          IconButton(tooltip: 'Auto-categorise rules', onPressed: _openRules, icon: const Icon(Icons.auto_awesome_outlined)),
-        ],
-      ),
+      bottomNavigationBar: _selecting ? _SelectionBar(
+        count: _selected.length,
+        busy: _confirmingAll,
+        onIgnore: () => _ignoreMany(_chosen),
+        onAdd: () => _addMany(_chosen),
+      ) : null,
       body: RefreshIndicator(
         onRefresh: () async {
           await sync?.scan(force: true);
@@ -325,15 +466,49 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
                   style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
                 ),
               ),
-              const Icon(Icons.swipe_right_alt, size: 18, color: AppColors.income),
-              Text(' add  ', style: theme.textTheme.bodySmall),
-              Icon(Icons.swipe_left_alt, size: 18, color: theme.colorScheme.outline),
-              Text(' ignore', style: theme.textTheme.bodySmall),
+              if (!_selecting) ...[
+                const Icon(Icons.swipe_right_alt, size: 18, color: AppColors.income),
+                Text(' add  ', style: theme.textTheme.bodySmall),
+                Icon(Icons.swipe_left_alt, size: 18, color: theme.colorScheme.outline),
+                Text(' ignore', style: theme.textTheme.bodySmall),
+              ] else
+                Text('Tap cards to choose', style: theme.textTheme.bodySmall),
             ]),
+            if (!_selecting && items.length > 1) ...[
+              const SizedBox(height: 8),
+              Row(children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _confirmingAll ? null : _ignoreAll,
+                    icon: const Icon(Icons.do_not_disturb_on_outlined, size: 18),
+                    label: const Text('Ignore all'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _confirmingAll ? null : () => _startSelecting(),
+                    icon: const Icon(Icons.checklist, size: 18),
+                    label: const Text('Choose'),
+                  ),
+                ),
+                if (readyCount > 0) ...[
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: FilledButton.tonalIcon(
+                      onPressed: _confirmingAll ? null : _confirmAllReady,
+                      icon: const Icon(Icons.done_all, size: 18),
+                      label: Text('Add $readyCount'),
+                    ),
+                  ),
+                ],
+              ]),
+            ],
             const SizedBox(height: 8),
             for (final item in items)
               Dismissible(
                 key: ValueKey(item['id']),
+                direction: _selecting ? DismissDirection.none : DismissDirection.horizontal,
                 background: _SwipeBackground(
                   icon: Icons.check_circle,
                   label: item['account_id'] == null ? 'Choose account' : 'Add to Money',
@@ -354,7 +529,10 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
                 onDismissed: (direction) => _afterSwipe(item, direction),
                 child: _PendingCard(
                   item: item,
-                  onTap: () => _edit(item),
+                  selecting: _selecting,
+                  selected: _selected.contains(item['id']),
+                  onLongPress: () => _selecting ? _toggle(item['id'] as String) : _startSelecting(item['id'] as String),
+                  onTap: () => _selecting ? _toggle(item['id'] as String) : _edit(item),
                   onCategory: () => _teach(item),
                   onAccount: () => _pickAccount(item),
                   onConfirm: () => _confirm(item),
@@ -363,6 +541,48 @@ class _ReviewInboxScreenState extends State<ReviewInboxScreen> {
               ),
           ],
         ]),
+      ),
+    );
+  }
+}
+
+/// Bottom bar while choosing several payments.
+class _SelectionBar extends StatelessWidget {
+  const _SelectionBar({required this.count, required this.busy, required this.onIgnore, required this.onAdd});
+  final int count;
+  final bool busy;
+  final VoidCallback onIgnore, onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = count > 0 && !busy;
+    return SafeArea(
+      child: Material(
+        elevation: 8,
+        color: Theme.of(context).colorScheme.surfaceContainer,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+          child: Row(children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: enabled ? onIgnore : null,
+                icon: const Icon(Icons.do_not_disturb_on_outlined, size: 18),
+                label: Text(count > 0 ? 'Ignore $count' : 'Ignore'),
+                style: OutlinedButton.styleFrom(foregroundColor: AppColors.expense),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: enabled ? onAdd : null,
+                icon: busy
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.check, size: 18),
+                label: Text(count > 0 ? 'Add $count' : 'Add'),
+              ),
+            ),
+          ]),
+        ),
       ),
     );
   }
@@ -459,6 +679,9 @@ class _CaughtUp extends StatelessWidget {
 class _PendingCard extends StatelessWidget {
   const _PendingCard({
     required this.item,
+    required this.selecting,
+    required this.selected,
+    required this.onLongPress,
     required this.onTap,
     required this.onCategory,
     required this.onAccount,
@@ -467,7 +690,8 @@ class _PendingCard extends StatelessWidget {
   });
 
   final Json item;
-  final VoidCallback onTap, onCategory, onAccount, onConfirm, onIgnore;
+  final bool selecting, selected;
+  final VoidCallback onLongPress, onTap, onCategory, onAccount, onConfirm, onIgnore;
 
   @override
   Widget build(BuildContext context) {
@@ -490,11 +714,21 @@ class _PendingCard extends StatelessWidget {
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       clipBehavior: Clip.antiAlias,
+      shape: selected
+          ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(16), side: BorderSide(color: theme.colorScheme.primary, width: 2))
+          : null,
+      color: selected ? theme.colorScheme.primaryContainer.withValues(alpha: 0.35) : null,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         child: IntrinsicHeight(
           child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
             Container(width: 5, color: color),
+            if (selecting)
+              Padding(
+                padding: const EdgeInsets.only(left: 4),
+                child: Checkbox(value: selected, onChanged: (_) => onTap()),
+              ),
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(12, 12, 8, 6),
@@ -553,8 +787,10 @@ class _PendingCard extends StatelessWidget {
                       child: const Text('Message'),
                     ),
                     const Spacer(),
-                    TextButton(onPressed: onIgnore, child: const Text('Ignore')),
-                    FilledButton.tonal(onPressed: onConfirm, child: const Text('Add')),
+                    if (!selecting) ...[
+                      TextButton(onPressed: onIgnore, child: const Text('Ignore')),
+                      FilledButton.tonal(onPressed: onConfirm, child: const Text('Add')),
+                    ],
                   ]),
                 ]),
               ),

@@ -234,7 +234,7 @@ void main() {
       await budgets.setLimit(categoryId: food, monthlyLimit: 1000, month: 11, year: 2026);
 
       final rows = await budgets.forMonth(11, 2026);
-      expect(rows, hasLength(12)); // 12 default expense categories
+      expect(rows, hasLength(13)); // 12 default expense categories + Big purchases
       expect(rows.map((r) => r['category_name']).toList(), [...rows.map((r) => r['category_name'])]..sort((a, b) => (a as String).toLowerCase().compareTo((b as String).toLowerCase())));
       final f = rows.firstWhere((r) => r['category_id'] == food);
       expect(f['monthly_limit'], 1000.0);
@@ -266,8 +266,8 @@ void main() {
   group('categories', () {
     test('system categories come with their subcategories, ordered by name', () async {
       final list = await LocalCategoriesService(db).list();
-      // The backend's 17, plus 5 phone-only "own money" transfer categories.
-      expect(list, hasLength(22));
+      // The backend's 17, plus 5 phone-only "own money" transfer categories and Big purchases.
+      expect(list, hasLength(23));
       expect(list.where((c) => c['type'] == 'TRANSFER'), hasLength(5));
       final names = list.map((c) => c['name'] as String).toList();
       expect(names, [...names]..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase())));

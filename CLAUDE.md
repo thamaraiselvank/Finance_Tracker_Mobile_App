@@ -66,7 +66,7 @@ that chooses between `remoteServices(ApiClient())` (cloud) and
 |---|---|
 | `core/` | `app_state.dart` (profile, theme, hide amounts; `isLocal` means no sign-in), `app_lock.dart` (fingerprint/PIN gate wrapping the whole navigator), `pro.dart` (`ProStatus`, `FreeLimits`, lock screens), `format.dart` (₹ lakh/crore), `api_client.dart` (cloud only) |
 | `services/` | Interfaces + `remote/` implementations (cloud) |
-| `local/` | Offline implementations: `local_db.dart` (SQLite3MultipleCiphers, key in Android Keystore), `schema.dart` (migrations; **current schema v6**), `local_money.dart`, `local_planning.dart`, `local_plans.dart`, `local_wealth.dart`, `local_capture.dart` (review inbox), `local_import.dart`, `local_backup.dart`, `local_insights.dart` (InsightEngine), Dart ports of backend maths (`finance_math`, `debt_math`, `tax_estimator`, `health_engine`, `assessment`, `py_round` = Python-compatible rounding) |
+| `local/` | Offline implementations: `local_db.dart` (SQLite3MultipleCiphers, key in Android Keystore), `schema.dart` (migrations; **current schema v7**), `local_money.dart`, `local_planning.dart`, `local_plans.dart`, `local_wealth.dart`, `local_capture.dart` (review inbox), `local_import.dart`, `local_backup.dart`, `local_insights.dart` (InsightEngine), Dart ports of backend maths (`finance_math`, `debt_math`, `tax_estimator`, `health_engine`, `assessment`, `py_round` = Python-compatible rounding) |
 | `capture/` | `sms_parser.dart`, `receipt_parser.dart` (OCR'd screenshots), `rules.dart` (learning rules), `categorizer.dart`, `sms_sync.dart`, `app_capture.dart` (notification sync, Share to Finverse, ML Kit OCR) |
 | `import/` | Statement and holdings import: CSV / xlsx / HTML-xls / PDF (pdfrx + ML Kit OCR for scanned pages) |
 | `backup/` | Encrypted backup file (ChaCha20 SQLite, PBKDF2 600k), Google Drive appDataFolder, auto backup |
@@ -109,6 +109,7 @@ All work is on the **`local-first`** branch (pushed to origin). `main` still has
 | 398d5a8 | fix | **Real share/OCR crash fix:** AGP 9 R8 strict mode stripped ML Kit registrar constructors → `android.r8.strictFullModeForKeepRules=false` + keep rules |
 | 1944b09 | fix | "Read older SMS" brings back payments deleted from Money / ignored by hand (`ingest(restore: true)`); SMS card says what a read found |
 | 644aa61 | — | Compare months (category → subcategory → payees), 7 more insight rules, Wealth overview (net worth chart, cushion, debt ratios, best/worst holdings, accounts) |
+| (next) | — | Phone-test feedback: inbox Ignore all / choose several / 2-second Undo; passive income from holdings (asset-linked INCOME schedules, auto-add payouts); goal kinds for purchases + monthly saving tracker (schema v7: `goals.goal_kind`, Big purchases category); Money subcategory drill-down; net worth time frames; calculator charts |
 
 Run `git log --stat` for the details. The commit messages describe each feature.
 

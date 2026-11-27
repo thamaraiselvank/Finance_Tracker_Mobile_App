@@ -1,6 +1,8 @@
+import 'package:intl/intl.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../config.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
@@ -20,6 +22,21 @@ const goalTypes = {
   'BUSINESS': 'Business',
   'OTHER': 'Other',
 };
+
+/// Things to buy. Offline version only (the web backend doesn't know them).
+const goalPurchaseTypes = {
+  'CAR': 'Buy a car',
+  'BIKE': 'Buy a bike / scooter',
+  'HOME': 'Buy a home',
+  'GADGET': 'Phone, laptop or gadget',
+  'WEDDING': 'Wedding',
+  'GOLD': 'Gold / jewellery',
+};
+
+/// Goal types offered in the form (and used for labels).
+Map<String, String> get goalTypeChoices => AppConfig.isLocal ? {...goalPurchaseTypes, ...goalTypes} : goalTypes;
+
+String goalTypeLabel(Object? type) => {...goalTypes, ...goalPurchaseTypes}[type] ?? humanize(type?.toString());
 
 const goalPriorities = {1: '1 – Highest', 2: '2 – High', 3: '3 – Medium', 4: '4 – Low', 5: '5 – Lowest'};
 
@@ -53,7 +70,9 @@ class _GoalsScreenState extends State<GoalsScreen> {
   }
 
   Future<void> _contribute(Map<String, dynamic> goal) async {
-    final controller = TextEditingController();
+    final history = goal['saving_history'] as Map?;
+    final left = toDouble(history?['left_this_month']);
+    final controller = TextEditingController(text: left > 0 ? left.toStringAsFixed(0) : '');
     final formKey = GlobalKey<FormState>();
     final money = context.read<AppState>().money;
     final amount = await showDialog<double>(
@@ -77,7 +96,18 @@ class _GoalsScreenState extends State<GoalsScreen> {
     try {
       await context.services.goals.addContribution(goal['id'].toString(), amount);
       if (!mounted) return;
-      context.showSnack('Contribution added');
+      final plan = toDouble(history?['plan']);
+      final before = toDouble(history?['this_month']);
+      final streak = toInt(history?['streak']);
+      final money = context.read<AppState>().money;
+      if (plan > 0 && before < plan && before + amount >= plan) {
+        final months = streak + 1;
+        context.showSnack(months > 1 ? "This month's saving is done. $months months in a row! 🔥" : "This month's saving is done! 🎉");
+      } else if (plan > 0 && before + amount < plan) {
+        context.showSnack("Added. ${money.format(plan - before - amount)} more to reach this month's plan.");
+      } else {
+        context.showSnack('Added to your goal');
+      }
       _reload();
     } catch (e) {
       if (mounted) context.showSnack(e.toString(), error: true);
@@ -109,12 +139,23 @@ class _GoalsScreenState extends State<GoalsScreen> {
         builder: (context, d, reload) {
           final active = d.goals.where((g) => (g['status'] ?? 'ACTIVE') != 'COMPLETED').toList();
           final done = d.goals.where((g) => g['status'] == 'COMPLETED').toList();
+          final tracked = active.where((g) => g['saving_history'] is Map).toList();
+          final savedThisMonth = tracked.fold<double>(0, (s, g) => s + toDouble((g['saving_history'] as Map)['this_month']));
+          final planThisMonth = tracked.fold<double>(0, (s, g) => s + toDouble((g['saving_history'] as Map)['plan']));
           return ListView(padding: const EdgeInsets.fromLTRB(16, 4, 16, 96), children: [
             StatGrid(children: [
               StatTile(label: 'Saved so far', value: state.money.compact(d.summary['total_current_amount'], hidden: state.hideAmounts), color: AppColors.income),
               StatTile(label: 'Total target', value: state.money.compact(d.summary['total_target_amount'], hidden: state.hideAmounts)),
               StatTile(label: 'Active goals', value: '${toInt(d.summary['active_goals'])}'),
-              StatTile(label: 'Monthly allocation', value: state.money.compact(d.summary['total_monthly_allocation'], hidden: state.hideAmounts)),
+              if (tracked.isNotEmpty)
+                StatTile(
+                  label: 'Saved this month',
+                  value: state.money.compact(savedThisMonth, hidden: state.hideAmounts),
+                  color: planThisMonth > 0 && savedThisMonth >= planThisMonth ? AppColors.income : null,
+                  subtitle: planThisMonth > 0 ? 'Plan ${state.money.compact(planThisMonth, hidden: state.hideAmounts)}' : null,
+                )
+              else
+                StatTile(label: 'Monthly allocation', value: state.money.compact(d.summary['total_monthly_allocation'], hidden: state.hideAmounts)),
             ]),
             if (d.goals.isEmpty)
               EmptyState(
@@ -166,7 +207,7 @@ class _GoalCard extends StatelessWidget {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(children: [
               Expanded(child: Text(goal['goal_name'].toString(), style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700))),
-              Chip(label: Text(goalTypes[goal['goal_type']] ?? humanize(goal['goal_type'])), visualDensity: VisualDensity.compact),
+              Chip(label: Text(goalTypeLabel(goal['goal_type'])), visualDensity: VisualDensity.compact),
             ]),
             const SizedBox(height: 8),
             Row(children: [
@@ -178,6 +219,10 @@ class _GoalCard extends StatelessWidget {
             const SizedBox(height: 8),
             ProgressBar(value: progress, color: completed ? AppColors.income : null),
             const SizedBox(height: 8),
+            if (!completed && goal['saving_history'] is Map) ...[
+              _SavingTracker(history: Map<String, dynamic>.from(goal['saving_history'] as Map)),
+              const SizedBox(height: 8),
+            ],
             Text(
               [
                 'Target ${displayDate(targetDate)}',
@@ -195,6 +240,117 @@ class _GoalCard extends StatelessWidget {
           ]),
         ),
       ),
+    );
+  }
+}
+
+/// This month's saving for a goal, the last few months as saved / missed
+/// dots, and the streak of months that met the plan.
+class _SavingTracker extends StatelessWidget {
+  const _SavingTracker({required this.history});
+  final Map<String, dynamic> history;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final theme = Theme.of(context);
+    final months = (history['months'] as List).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final plan = toDouble(history['plan']);
+    final saved = toDouble(history['this_month']);
+    final left = toDouble(history['left_this_month']);
+    final streak = toInt(history['streak']);
+    final lastMonth = months.length >= 2 ? months[months.length - 2]['status'] : null;
+    String m(double v) => state.money.format(v, hidden: state.hideAmounts);
+
+    final String message;
+    final Color tone;
+    if (plan <= 0) {
+      message = saved > 0 ? 'You saved ${m(saved)} this month' : 'Nothing saved this month yet';
+      tone = saved > 0 ? AppColors.income : theme.colorScheme.outline;
+    } else if (left <= 0) {
+      message = "This month's ${m(plan)} is saved. Well done!";
+      tone = AppColors.income;
+    } else if (lastMonth == 'missed' || lastMonth == 'partial') {
+      message = 'Last month fell short. Save ${m(left)} this month to get back on track.';
+      tone = AppColors.warning;
+    } else {
+      message = saved > 0 ? '${m(saved)} of ${m(plan)} saved this month · ${m(left)} to go' : 'Save ${m(plan)} this month to stay on track';
+      tone = saved > 0 ? AppColors.info : theme.colorScheme.outline;
+    }
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+      decoration: BoxDecoration(color: tone.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(12)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: Text(message, style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600))),
+          if (streak >= 2) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(color: AppColors.warning.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(20)),
+              child: Text('🔥 $streak months', style: theme.textTheme.labelSmall?.copyWith(fontWeight: FontWeight.w700)),
+            ),
+          ],
+        ]),
+        if (plan > 0) ...[
+          const SizedBox(height: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: (saved / plan).clamp(0.0, 1.0),
+              minHeight: 6,
+              color: left <= 0 ? AppColors.income : AppColors.info,
+              backgroundColor: theme.colorScheme.surfaceContainerHighest,
+            ),
+          ),
+        ],
+        const SizedBox(height: 10),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          for (final month in months) _MonthDot(month: month),
+        ]),
+      ]),
+    );
+  }
+}
+
+/// One month: saved (tick), less than planned (dash), missed (cross),
+/// this month (ring) or before the goal existed (faint ring).
+class _MonthDot extends StatelessWidget {
+  const _MonthDot({required this.month});
+  final Map<String, dynamic> month;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final state = context.watch<AppState>();
+    final date = DateTime.parse('${month['month']}-01');
+    final status = month['status'] as String;
+    final (IconData? icon, Color color, String tip) = switch (status) {
+      'met' => (Icons.check, AppColors.income, 'Saved'),
+      'partial' => (Icons.remove, AppColors.warning, 'Saved less than planned'),
+      'missed' => (Icons.close, AppColors.expense, 'Missed'),
+      'open' => (null, AppColors.info, 'This month'),
+      _ => (null, theme.colorScheme.outlineVariant, 'Before this goal'),
+    };
+    final saved = toDouble(month['saved']);
+    return Tooltip(
+      message: '${DateFormat('MMMM').format(date)}: $tip${saved > 0 ? ' · ${state.money.format(saved, hidden: state.hideAmounts)}' : ''}',
+      triggerMode: TooltipTriggerMode.tap,
+      child: Column(children: [
+        Container(
+          width: 26,
+          height: 26,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: status == 'open' || status == 'before' ? null : color.withValues(alpha: 0.18),
+            border: Border.all(color: color, width: status == 'open' ? 2 : 1),
+          ),
+          child: icon == null ? null : Icon(icon, size: 15, color: color),
+        ),
+        const SizedBox(height: 3),
+        Text(DateFormat('MMM').format(date), style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline)),
+      ]),
     );
   }
 }
@@ -289,7 +445,7 @@ class _GoalFormState extends State<GoalForm> {
       key: _formKey,
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
         TextInput(controller: _name, label: 'Goal name', required: true),
-        DropdownInput<String>(label: 'Goal type', value: _type, items: goalTypes, onChanged: (v) => setState(() => _type = v)),
+        DropdownInput<String>(label: 'Goal type', value: _type, items: {...goalTypeChoices, if (_type != null && !goalTypeChoices.containsKey(_type)) _type!: goalTypeLabel(_type)}, onChanged: (v) => setState(() => _type = v)),
         AmountField(controller: _target, label: 'Target amount', prefix: money.symbol),
         AmountField(controller: _current, label: 'Already saved', prefix: money.symbol, required: false),
         DateInput(

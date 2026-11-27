@@ -72,6 +72,93 @@ void main() {
     });
   });
 
+  group('income from holdings', () {
+    Map<String, dynamic> fd(String accountId, {bool auto = true, String start = '2026-12-05'}) => {
+          'name': 'SBI FD', 'asset_class': 'FIXED_INCOME', 'invested_amount': 200000, 'current_value': 200000,
+          'income': {
+            'source_type': 'INTEREST', 'amount': 1500, 'frequency': 'MONTHLY', 'interval_count': 1,
+            'start_date': start, 'account_id': accountId, 'auto_add': auto,
+          },
+        };
+
+    test('an asset that pays interest gets a schedule and counts as passive income', () async {
+      final acc = await account();
+      final assets = LocalAssetsService(db, today: () => today);
+      await assets.create(fd(acc));
+      final schedule = (await LocalSchedulesService(db).list()).single;
+      expect(schedule['description'], 'Interest: SBI FD');
+      expect(schedule['flow_type'], 'INCOME');
+      expect(schedule['source_type'], 'INTEREST');
+      expect(schedule['category_name'], 'Investments & Returns');
+
+      final s = await assets.summary();
+      final item = (s['asset_classes'] as List).single['items'].single as Map;
+      expect((item['income'] as Map)['yearly'], 18000.0);
+      expect((item['income'] as Map)['next_date'], '2026-12-05');
+      final p = s['passive_income'] as Map;
+      expect(p['yearly'], 18000.0);
+      expect(p['monthly'], 1500.0);
+      expect(p['count'], 1);
+      expect((p['payouts'] as List).first['occurrence_date'], '2026-12-05');
+    });
+
+    test('rent every 6 months, and switching income off removes the schedule', () async {
+      final acc = await account();
+      final assets = LocalAssetsService(db, today: () => today);
+      await assets.create({
+        'name': 'Flat', 'asset_class': 'REAL_ESTATE', 'current_value': 5000000,
+        'income': {'source_type': 'RENTAL_INCOME', 'amount': 60000, 'frequency': 'MONTHLY', 'interval_count': 6, 'start_date': '2027-01-01', 'account_id': acc},
+      });
+      expect((await LocalSchedulesService(db).list()).single['category_name'], 'Rental Income');
+      expect(((await assets.summary())['passive_income'] as Map)['yearly'], 120000.0);
+      final id = db.queryOne('SELECT id FROM assets')!['id'] as String;
+      await assets.update(id, {
+        'income': {'source_type': 'RENTAL_INCOME', 'amount': 65000, 'frequency': 'MONTHLY', 'interval_count': 6, 'start_date': '2027-01-01', 'account_id': acc},
+      });
+      expect((await LocalSchedulesService(db).list()).single['amount'], 65000.0);
+      await assets.update(id, {'income': null});
+      expect(await LocalSchedulesService(db).list(), isEmpty);
+      expect(((await assets.summary())['passive_income'] as Map)['count'], 0);
+    });
+
+    test('due payouts are added to Money automatically, once, from the day it was set up', () async {
+      final acc = await account(balance: 1000);
+      var now = DateTime(2026, 11, 23);
+      final assets = LocalAssetsService(db, today: () => now);
+      // First payout was in October (before it was set up): not added.
+      await assets.create(fd(acc, start: '2026-10-05'));
+      db.execute('UPDATE scheduled_cashflows SET created_at = ?', [DateTime(2026, 11, 20).toUtc().toIso8601String()]);
+      await assets.summary();
+      expect((await LocalAccountsService(db).list()).single['balance'], 1000.0);
+
+      now = DateTime(2026, 12, 6);
+      final s = await assets.summary();
+      await assets.summary(); // again: nothing added twice
+      expect((await LocalAccountsService(db).list()).single['balance'], 2500.0);
+      final tx = db.query("SELECT type, amount_minor, date FROM transactions WHERE source = 'SCHEDULE'");
+      expect(tx.map((r) => r.values), [['INCOME', 150000, '2026-12-05']]);
+      expect((s['passive_income'] as Map)['received_this_year'], 1500.0);
+    });
+
+    test('no automatic payouts when switched off; deleting the asset stops its income', () async {
+      final acc = await account(balance: 1000);
+      final assets = LocalAssetsService(db, today: () => DateTime(2026, 12, 6));
+      await assets.create(fd(acc, auto: false));
+      db.execute('UPDATE scheduled_cashflows SET created_at = ?', [DateTime(2026, 11, 20).toUtc().toIso8601String()]);
+      final s = await assets.summary();
+      expect((await LocalAccountsService(db).list()).single['balance'], 1000.0);
+      expect(((s['passive_income'] as Map)['payouts'] as List).first['status'], 'overdue');
+      await assets.delete(db.queryOne('SELECT id FROM assets')!['id'] as String);
+      expect(await LocalSchedulesService(db).list(), isEmpty);
+    });
+
+    test('a bad income setting does not leave a half-saved asset', () async {
+      final assets = LocalAssetsService(db, today: () => today);
+      expect(await errorOf(() => assets.create(fd('no-such-account'))), isNotNull);
+      expect(db.query('SELECT id FROM assets'), isEmpty);
+    });
+  });
+
   group('Bills & recurring', () {
     late LocalSchedulesService schedules;
     setUp(() => schedules = LocalSchedulesService(db, today: () => today));

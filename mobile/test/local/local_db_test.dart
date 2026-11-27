@@ -10,8 +10,8 @@ void main() {
     test('a new database is migrated and seeded with the default categories', () {
       final db = LocalDb.inMemory();
       expect(db.queryOne('PRAGMA user_version')!.values.first, migrations.length);
-      expect(db.queryOne('SELECT count(*) AS n FROM categories WHERE is_system = 1')!['n'], 22); // 17 + 5 transfer
-      expect(db.queryOne('SELECT count(*) AS n FROM subcategories')!['n'], 45);
+      expect(db.queryOne('SELECT count(*) AS n FROM categories WHERE is_system = 1')!['n'], 23); // 17 + 5 transfer + Big purchases (v7)
+      expect(db.queryOne('SELECT count(*) AS n FROM subcategories')!['n'], 51); // 45 + 6 Big purchases (v7)
       expect(db.queryOne("SELECT name FROM categories WHERE id = '00000000-0000-0000-0000-000000000011'")!['name'], 'Food & Groceries');
       expect(db.queryOne('PRAGMA foreign_keys')!.values.first, 1);
       db.close();

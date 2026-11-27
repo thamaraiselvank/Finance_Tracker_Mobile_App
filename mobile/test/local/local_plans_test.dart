@@ -89,6 +89,56 @@ void main() {
     });
   });
 
+  group('goal kinds and saving history', () {
+    late LocalGoalsService goals;
+    setUp(() => goals = LocalGoalsService(db, today: () => today));
+
+    test('things to buy (car, bike…) are saved and come back as their own type', () async {
+      await goals.create({'goal_name': 'New bike', 'goal_type': 'BIKE', 'target_amount': 90000, 'target_date': '2027-06-01'});
+      var g = (await goals.list()).single;
+      expect(g['goal_type'], 'BIKE');
+      expect(db.queryOne('SELECT goal_type, goal_kind FROM goals')!.values, ['OTHER', 'BIKE']);
+
+      await goals.update(g['id'] as String, {'goal_type': 'CAR'});
+      expect((await goals.list()).single['goal_type'], 'CAR');
+      await goals.update(g['id'] as String, {'goal_type': 'VACATION'});
+      g = (await goals.list()).single;
+      expect(g['goal_type'], 'VACATION');
+      expect(db.queryOne('SELECT goal_kind FROM goals')!['goal_kind'], isNull);
+      expect((await errorOf(() => goals.update(g['id'] as String, {'goal_type': 'YACHT'}))).toString(), 'Goal type: Choose a valid goal type');
+    });
+
+    test('each month is saved, short, missed or still open, with a streak', () {
+      final goal = {'allocated_monthly_savings': 5000.0, 'suggested_monthly_savings': 0.0, 'created_at': '2026-06-10T00:00:00.000Z'};
+      final h = goalSavingHistory(goal, {'2026-08': 500000, '2026-09': 600000, '2026-10': 500000, '2026-07': 100000},
+          today: today, months: 6);
+      expect([for (final m in h['months'] as List) m['status']], ['before', 'partial', 'met', 'met', 'met', 'open']);
+      expect(h['streak'], 3); // Aug–Oct; November not met yet
+      expect(h['plan'], 5000.0);
+      expect(h['left_this_month'], 5000.0);
+
+      final missed = goalSavingHistory(goal, {'2026-11': 500000}, today: today, months: 3);
+      expect([for (final m in missed['months'] as List) m['status']], ['missed', 'missed', 'met']);
+      expect(missed['streak'], 1);
+      expect(missed['left_this_month'], 0.0);
+    });
+
+    test('goals report this month and the last six months from contributions', () async {
+      await goals.create({'goal_name': 'Laptop', 'goal_type': 'GADGET', 'target_amount': 100000, 'target_date': '2027-11-23', 'allocated_monthly_savings': 4000});
+      final id = (await goals.list()).single['id'] as String;
+      db.execute('UPDATE goals SET created_at = ?', [DateTime(2026, 9, 1).toUtc().toIso8601String()]);
+      for (final (date, minor) in [(DateTime(2026, 9, 15), 400000), (DateTime(2026, 10, 3), 150000), (DateTime(2026, 11, 2), 400000)]) {
+        db.execute('INSERT INTO goal_contributions (id, goal_id, amount_minor, contributed_at) VALUES (?, ?, ?, ?)',
+            [newId(), id, minor, date.toUtc().toIso8601String()]);
+      }
+      final h = (await goals.list()).single['saving_history'] as Map;
+      expect([for (final m in h['months'] as List) m['month']], ['2026-06', '2026-07', '2026-08', '2026-09', '2026-10', '2026-11']);
+      expect([for (final m in h['months'] as List) m['status']], ['before', 'before', 'before', 'met', 'partial', 'met']);
+      expect(h['this_month'], 4000.0);
+      expect(h['streak'], 1);
+    });
+  });
+
   group('debts', () {
     late LocalDebtsService debts;
     setUp(() => debts = LocalDebtsService(db, today: () => today));

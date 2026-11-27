@@ -32,6 +32,15 @@ class CategorySlice {
   CategorySlice(this.key, this.name, this.amount, this.count, this.color);
 }
 
+/// Totals for one subcategory of the selected category.
+class SubSlice {
+  final String key;
+  final String name;
+  final double amount;
+  final int count;
+  SubSlice(this.key, this.name, this.amount, this.count);
+}
+
 class _PeriodData {
   final List<Map<String, dynamic>> all;
   final Map<String, dynamic> previous;
@@ -54,6 +63,7 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
   String _search = '';
   String _breakdownType = 'EXPENSE';
   CategorySlice? _categoryFilter;
+  SubSlice? _subFilter;
   Timer? _debounce;
   final _searchController = TextEditingController();
   final _viewKey = GlobalKey<AsyncViewState<_PeriodData>>();
@@ -92,6 +102,7 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
       if (period != null) _period = period;
       _anchor = value;
       _categoryFilter = null;
+      _subFilter = null;
     });
     _reload();
   }
@@ -102,6 +113,11 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
   }
 
   bool get _hasFilters => _type != 'ALL' || _search.isNotEmpty || _categoryFilter != null;
+
+  void _selectCategory(CategorySlice s) => setState(() {
+        _categoryFilter = _categoryFilter?.key == s.key ? null : s;
+        _subFilter = null;
+      });
 
   String get _periodLabel => _period == _Period.month ? DateFormat('MMMM yyyy').format(_anchor) : '${_anchor.year}';
 
@@ -133,6 +149,21 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
     ];
   }
 
+  /// The selected category split by subcategory (largest first).
+  List<SubSlice> _subBreakdown(List<Map<String, dynamic>> txs, String type, String categoryKey) {
+    final totals = <String, (String, double, int)>{};
+    for (final t in txs) {
+      if (_typeOf(t) != type || (t['category_id']?.toString() ?? 'none') != categoryKey) continue;
+      final key = t['subcategory_id']?.toString() ?? 'none';
+      final name = t['subcategory_name']?.toString() ?? 'No subcategory';
+      final prev = totals[key];
+      totals[key] = (name, (prev?.$2 ?? 0) + toDouble(t['amount']), (prev?.$3 ?? 0) + 1);
+    }
+    final list = [for (final e in totals.entries) SubSlice(e.key, e.value.$1, e.value.$2, e.value.$3)]
+      ..sort((a, b) => b.amount.compareTo(a.amount));
+    return list;
+  }
+
   /// Use the category's own colour unless another slice already took it.
   Color _sliceColor(String? hex, int index, Set<int> used) {
     var color = parseHexColor(hex, _palette[index % _palette.length]);
@@ -148,6 +179,7 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
       if (_categoryFilter != null) {
         if ((t['category_id']?.toString() ?? 'none') != _categoryFilter!.key) return false;
         if (_typeOf(t) != _breakdownType) return false;
+        if (_subFilter != null && (t['subcategory_id']?.toString() ?? 'none') != _subFilter!.key) return false;
       }
       if (q.isNotEmpty) {
         final hay = '${t['description'] ?? ''} ${t['notes'] ?? ''} ${t['tags'] ?? ''} ${t['category_name'] ?? ''} ${t['account_name'] ?? ''}'.toLowerCase();
@@ -247,6 +279,7 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
             onSelectionChanged: (s) => setState(() {
               _breakdownType = s.first;
               _categoryFilter = null;
+              _subFilter = null;
             }),
           ),
         ),
@@ -254,7 +287,10 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
           slices: slices,
           total: _breakdownType == 'EXPENSE' ? expense : income,
           selected: _categoryFilter,
-          onSelect: (s) => setState(() => _categoryFilter = _categoryFilter?.key == s.key ? null : s),
+          onSelect: _selectCategory,
+          subSlices: _categoryFilter == null ? const [] : _subBreakdown(all, _breakdownType, _categoryFilter!.key),
+          selectedSub: _subFilter,
+          onSelectSub: (sub) => setState(() => _subFilter = _subFilter?.key == sub.key ? null : sub),
         ),
       ],
       SectionHeader(
@@ -323,8 +359,11 @@ class _TransactionsTabState extends State<TransactionsTab> with AutomaticKeepAli
               padding: const EdgeInsets.only(right: 8),
               child: InputChip(
                 avatar: CircleAvatar(backgroundColor: _categoryFilter!.color, radius: 6),
-                label: Text(_categoryFilter!.name),
-                onDeleted: () => setState(() => _categoryFilter = null),
+                label: Text(_subFilter == null ? _categoryFilter!.name : '${_categoryFilter!.name} · ${_subFilter!.name}'),
+                onDeleted: () => setState(() {
+                  _categoryFilter = null;
+                  _subFilter = null;
+                }),
               ),
             ),
           for (final t in const {'ALL': 'All', 'EXPENSE': 'Expenses', 'INCOME': 'Income', 'TRANSFER': 'Transfers'}.entries)
@@ -423,13 +462,26 @@ class _PeriodBar extends StatelessWidget {
   }
 }
 
-/// Donut chart + legend of category totals. Tap a row to filter the list.
+/// Donut chart + legend of category totals. Tap a slice or a row to open
+/// that category: its subcategories show underneath and the list is
+/// filtered to it. Tap a subcategory to narrow the list further.
 class _BreakdownCard extends StatelessWidget {
-  const _BreakdownCard({required this.slices, required this.total, required this.selected, required this.onSelect});
+  const _BreakdownCard({
+    required this.slices,
+    required this.total,
+    required this.selected,
+    required this.onSelect,
+    required this.subSlices,
+    required this.selectedSub,
+    required this.onSelectSub,
+  });
   final List<CategorySlice> slices;
   final double total;
   final CategorySlice? selected;
   final ValueChanged<CategorySlice> onSelect;
+  final List<SubSlice> subSlices;
+  final SubSlice? selectedSub;
+  final ValueChanged<SubSlice> onSelectSub;
 
   @override
   Widget build(BuildContext context) {
@@ -453,6 +505,13 @@ class _BreakdownCard extends StatelessWidget {
               PieChart(PieChartData(
                 sectionsSpace: 2,
                 centerSpaceRadius: 58,
+                pieTouchData: PieTouchData(
+                  touchCallback: (event, response) {
+                    if (event is! FlTapUpEvent) return;
+                    final index = response?.touchedSection?.touchedSectionIndex ?? -1;
+                    if (index >= 0 && index < top.length) onSelect(top[index]);
+                  },
+                ),
                 sections: [
                   for (final (color, amount, key) in chartSlices)
                     PieChartSectionData(
@@ -488,9 +547,18 @@ class _BreakdownCard extends StatelessWidget {
                     Expanded(child: Text('${s.name}  ·  ${s.count}', maxLines: 1, overflow: TextOverflow.ellipsis)),
                     Text(state.money.format(s.amount, hidden: state.hideAmounts), style: const TextStyle(fontWeight: FontWeight.w600)),
                     SizedBox(width: 48, child: Text(percent(s.amount / total * 100, digits: 0), textAlign: TextAlign.right, style: TextStyle(color: theme.colorScheme.outline))),
+                    Icon(selected?.key == s.key ? Icons.expand_less : Icons.expand_more, size: 18, color: theme.colorScheme.outline),
                   ]),
                   const SizedBox(height: 6),
                   ProgressBar(value: s.amount / total, color: s.color),
+                  if (selected?.key == s.key)
+                    _SubBreakdown(
+                      color: s.color,
+                      categoryTotal: s.amount,
+                      subs: subSlices,
+                      selected: selectedSub,
+                      onSelect: onSelectSub,
+                    ),
                 ]),
               ),
             ),
@@ -498,6 +566,75 @@ class _BreakdownCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Inside an open category: a bar for each subcategory, in shades of the
+/// category colour. Tap one to show only its transactions below.
+class _SubBreakdown extends StatelessWidget {
+  const _SubBreakdown({required this.color, required this.categoryTotal, required this.subs, required this.selected, required this.onSelect});
+  final Color color;
+  final double categoryTotal;
+  final List<SubSlice> subs;
+  final SubSlice? selected;
+  final ValueChanged<SubSlice> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
+    if (subs.isEmpty || categoryTotal <= 0) return const SizedBox.shrink();
+    final onlyNone = subs.length == 1 && subs.first.key == 'none';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 10, 0, 2),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (onlyNone)
+          Text('No subcategories used here. Edit a transaction to pick one, and the split shows up here.', style: muted)
+        else ...[
+          // One stacked bar: how the category splits.
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: SizedBox(
+              height: 12,
+              child: Row(children: [
+                for (var i = 0; i < subs.length; i++)
+                  Expanded(
+                    flex: math.max(1, (subs[i].amount / categoryTotal * 1000).round()),
+                    child: Container(color: _shade(i, subs.length).withValues(alpha: selected == null || selected!.key == subs[i].key ? 1 : 0.3)),
+                  ),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 6),
+          for (var i = 0; i < subs.length; i++)
+            InkWell(
+              borderRadius: BorderRadius.circular(6),
+              onTap: () => onSelect(subs[i]),
+              child: Container(
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+                decoration: BoxDecoration(
+                  color: selected?.key == subs[i].key ? color.withValues(alpha: 0.12) : null,
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Row(children: [
+                  Container(width: 8, height: 8, decoration: BoxDecoration(color: _shade(i, subs.length), borderRadius: BorderRadius.circular(2))),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('${subs[i].name}  ·  ${subs[i].count}',
+                        maxLines: 1, overflow: TextOverflow.ellipsis, style: theme.textTheme.bodySmall?.copyWith(fontWeight: selected?.key == subs[i].key ? FontWeight.w700 : null)),
+                  ),
+                  Text(state.money.format(subs[i].amount, hidden: state.hideAmounts), style: theme.textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600)),
+                  SizedBox(width: 44, child: Text(percent(subs[i].amount / categoryTotal * 100, digits: 0), textAlign: TextAlign.right, style: muted)),
+                ]),
+              ),
+            ),
+        ],
+      ]),
+    );
+  }
+
+  /// From the full category colour to a lighter version of it.
+  Color _shade(int i, int n) => n <= 1 ? color : Color.lerp(color, Colors.white, 0.55 * i / (n - 1))!;
 }
 
 /// Income vs expense bars for each month of a year. Tap a month to open it.

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
@@ -7,6 +9,7 @@ import '../core/pro.dart';
 import '../core/theme.dart';
 import '../services/services.dart';
 import '../widgets/common.dart';
+import 'calculator_charts.dart';
 
 /// One numeric input of a calculator.
 class _Field {
@@ -268,33 +271,51 @@ class _CalculatorPageState extends State<_CalculatorPage> {
       f.key: TextEditingController(text: f.initial),
   };
   Map<String, dynamic>? _result;
-  bool _busy = false;
+  Map<String, dynamic> _input = {};
+  String? _error;
+  Timer? _debounce;
+
+  /// Results (and charts) update by themselves while typing.
+  @override
+  void initState() {
+    super.initState();
+    for (final c in _controllers.values) {
+      c.addListener(_changed);
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _calculate());
+  }
 
   @override
   void dispose() {
+    _debounce?.cancel();
     for (final c in _controllers.values) {
       c.dispose();
     }
     super.dispose();
   }
 
+  void _changed() {
+    _debounce?.cancel();
+    _debounce = Timer(const Duration(milliseconds: 450), _calculate);
+  }
+
   Future<void> _calculate() async {
-    if (!_formKey.currentState!.validate()) return;
-    FocusScope.of(context).unfocus();
-    setState(() => _busy = true);
+    if (!mounted || !(_formKey.currentState?.validate() ?? false)) return;
+    final body = {
+      for (final f in widget.def.fields)
+        f.key: f.integer ? int.parse(_controllers[f.key]!.text.trim()) : double.parse(_controllers[f.key]!.text.trim()),
+    };
     try {
-      final body = {
-        for (final f in widget.def.fields)
-          f.key: f.integer
-              ? int.parse(_controllers[f.key]!.text.trim())
-              : double.parse(_controllers[f.key]!.text.trim()),
-      };
       final res = await context.services.calculators.calculate(widget.def.kind, body);
-      if (mounted) setState(() => _result = res);
+      if (mounted) {
+        setState(() {
+          _result = res;
+          _input = body;
+          _error = null;
+        });
+      }
     } catch (e) {
-      if (mounted) context.showSnack(e.toString(), error: true);
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _error = e.toString());
     }
   }
 
@@ -346,7 +367,11 @@ class _CalculatorPageState extends State<_CalculatorPage> {
                   ],
                 ),
               ),
-            SaveButton(busy: _busy, onPressed: _calculate, label: 'Calculate'),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(_error!, style: TextStyle(color: theme.colorScheme.error)),
+              ),
             if (_result != null) ...[
               const SectionHeader('Result'),
               Card(
@@ -375,6 +400,9 @@ class _CalculatorPageState extends State<_CalculatorPage> {
                   ],
                 ),
               ),
+              ...calculatorCharts(widget.def.kind, _result!, _input),
+              const SizedBox(height: 8),
+              Text('Results update as you change the numbers.', textAlign: TextAlign.center, style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline)),
             ],
           ],
         ),

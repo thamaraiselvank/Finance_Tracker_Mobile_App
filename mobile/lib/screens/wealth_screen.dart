@@ -2,6 +2,7 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
+import '../config.dart';
 import '../core/app_state.dart';
 import '../core/format.dart';
 import '../core/theme.dart';
@@ -9,6 +10,7 @@ import '../widgets/common.dart';
 import '../export/export_data.dart' show ExportSection;
 import 'export_screen.dart' show ExportButton;
 import 'money_screen.dart' show AppScaffoldBar;
+import 'schedules_screen.dart' show markOccurrenceDone;
 import 'wealth_overview.dart';
 
 const assetClasses = {
@@ -21,6 +23,34 @@ const assetClasses = {
   'CRYPTO': 'Crypto',
   'OTHER': 'Other',
 };
+
+/// Regular income a holding can pay.
+const incomeKinds = {'DIVIDEND': 'Dividend', 'INTEREST': 'Interest', 'RENTAL_INCOME': 'Rent', 'OTHER': 'Other income'};
+
+/// How often it pays: label -> (frequency, interval).
+const incomeFrequencies = {
+  'Every month': ('MONTHLY', 1),
+  'Every 3 months': ('QUARTERLY', 1),
+  'Every 6 months': ('MONTHLY', 6),
+  'Every year': ('YEARLY', 1),
+};
+
+String incomeFrequencyLabel(String? frequency, int interval) {
+  for (final e in incomeFrequencies.entries) {
+    if (e.value.$1 == frequency && e.value.$2 == interval) return e.key;
+  }
+  return switch (frequency) {
+    'WEEKLY' => interval == 1 ? 'Every week' : 'Every $interval weeks',
+    'MONTHLY' => 'Every $interval months',
+    'QUARTERLY' => 'Every ${interval * 3} months',
+    _ => 'Every $interval years',
+  };
+}
+
+/// "Dividend ₹2,000 every 3 months".
+String incomeSummary(Map<String, dynamic> income, Money money, {bool hidden = false}) =>
+    '${incomeKinds[income['source_type']] ?? 'Income'} ${money.compact(income['amount'], hidden: hidden)} '
+    '${incomeFrequencyLabel(income['frequency'] as String?, toInt(income['interval_count'], 1)).toLowerCase()}';
 
 const _chartColors = [
   Color(0xFF10B981), Color(0xFF0EA5E9), Color(0xFFF59E0B), Color(0xFF8B5CF6),
@@ -109,6 +139,13 @@ class _WealthScreenState extends State<WealthScreen> {
               StatTile(label: 'Liabilities', value: state.money.compact(s['total_liabilities_outstanding'], hidden: state.hideAmounts), color: AppColors.expense),
               StatTile(label: 'Monthly EMIs', value: state.money.compact(s['total_monthly_emi'], hidden: state.hideAmounts)),
             ]),
+            if (s['passive_income'] is Map && classes.isNotEmpty) ...[
+              const SectionHeader('Passive income'),
+              _PassiveIncomeCard(
+                data: Map<String, dynamic>.from(s['passive_income'] as Map),
+                onChanged: () => _viewKey.currentState?.reload(),
+              ),
+            ],
             ...wealthOverviewSections(s['overview'] as Map<String, dynamic>?),
             if (classes.isNotEmpty) ...[
               const SectionHeader('Allocation'),
@@ -182,7 +219,11 @@ class _WealthScreenState extends State<WealthScreen> {
                       ListTile(
                         onTap: () => _openForm(a),
                         title: Text(a['name'].toString(), maxLines: 1, overflow: TextOverflow.ellipsis),
-                        subtitle: Text('Invested ${state.money.compact(a['invested_amount'], hidden: state.hideAmounts)}'),
+                        subtitle: Text([
+                          'Invested ${state.money.compact(a['invested_amount'], hidden: state.hideAmounts)}',
+                          if (a['income'] is Map) incomeSummary(Map<String, dynamic>.from(a['income'] as Map), state.money, hidden: state.hideAmounts),
+                        ].join('\n')),
+                        isThreeLine: a['income'] is Map,
                         trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
                           MoneyText(a['current_value'], style: const TextStyle(fontWeight: FontWeight.w700)),
                           Text(
@@ -206,6 +247,87 @@ class _WealthScreenState extends State<WealthScreen> {
   }
 }
 
+/// Expected income from holdings, what came in this year, and payouts that
+/// are due (with a quick "Received" button).
+class _PassiveIncomeCard extends StatelessWidget {
+  const _PassiveIncomeCard({required this.data, required this.onChanged});
+  final Map<String, dynamic> data;
+  final VoidCallback onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = context.watch<AppState>();
+    final theme = Theme.of(context);
+    final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
+    String c(dynamic v) => state.money.compact(v, hidden: state.hideAmounts);
+    if (toInt(data['count']) == 0) {
+      return Card(
+        child: ListTile(
+          leading: const CircleAvatar(child: Icon(Icons.payments_outlined, size: 20)),
+          title: const Text('Do your holdings pay you?'),
+          subtitle: const Text('Tap a holding below and switch on "Pays regular income" for dividends, interest or rent. '
+              'Finverse will add each payout to Money on its date.'),
+        ),
+      );
+    }
+    final payouts = (data['payouts'] as List? ?? []).map((e) => Map<String, dynamic>.from(e as Map)).toList();
+    final today = DateTime.now();
+    final todayDate = DateTime(today.year, today.month, today.day);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            Text(c(data['yearly']), style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800, color: AppColors.income)),
+            const SizedBox(width: 6),
+            Padding(padding: const EdgeInsets.only(bottom: 4), child: Text('a year', style: muted)),
+            const Spacer(),
+            Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+              Text('≈ ${c(data['monthly'])} / month', style: const TextStyle(fontWeight: FontWeight.w700)),
+              Text('Received this year: ${c(data['received_this_year'])}', style: muted),
+            ]),
+          ]),
+          if (payouts.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            const Divider(),
+            for (final o in payouts)
+              Builder(builder: (context) {
+                final date = toDate(o['occurrence_date'])!;
+                final days = date.difference(todayDate).inDays;
+                final due = days <= 0;
+                final when = days < 0
+                    ? 'Not marked received · ${shortDate(date)}'
+                    : days == 0
+                        ? 'Due today'
+                        : days == 1
+                            ? 'Tomorrow'
+                            : 'In $days days · ${shortDate(date)}';
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  leading: Icon(
+                    switch (o['source_type']) { 'INTEREST' => Icons.percent, 'RENTAL_INCOME' => Icons.home_outlined, _ => Icons.payments_outlined },
+                    color: due ? AppColors.warning : AppColors.income,
+                  ),
+                  title: Text(o['description'].toString(), maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(when, style: due ? theme.textTheme.bodySmall?.copyWith(color: AppColors.warning) : muted),
+                  trailing: due
+                      ? FilledButton.tonal(
+                          onPressed: () async {
+                            if (await markOccurrenceDone(context, o)) onChanged();
+                          },
+                          child: const Text('Received'),
+                        )
+                      : Text('+${c(o['amount'])}', style: const TextStyle(fontWeight: FontWeight.w700, color: AppColors.income)),
+                );
+              }),
+          ],
+        ]),
+      ),
+    );
+  }
+}
+
 class AssetForm extends StatefulWidget {
   const AssetForm({super.key, this.existing});
   final Map<String, dynamic>? existing;
@@ -221,7 +343,18 @@ class _AssetFormState extends State<AssetForm> {
   DateTime? _purchaseDate;
   bool _busy = false;
 
+  // Regular income (offline version only).
+  final _incomeAmount = TextEditingController();
+  bool _earns = false;
+  String _incomeKind = 'DIVIDEND';
+  (String, int) _incomeFrequency = ('QUARTERLY', 1);
+  DateTime? _incomeDate;
+  String? _incomeAccount;
+  bool _autoAdd = true;
+  List<Map<String, dynamic>> _accounts = [];
+
   bool get _isEdit => widget.existing != null;
+  bool get _canEarn => AppConfig.isLocal;
 
   Map<String, dynamic> get _meta {
     final m = widget.existing?['meta_data'];
@@ -241,11 +374,41 @@ class _AssetFormState extends State<AssetForm> {
     _notes = TextEditingController(text: e['notes']?.toString() ?? '');
     _class = e['asset_class']?.toString();
     _purchaseDate = toDate(e['purchase_date']);
+    final income = e['income'];
+    if (income is Map) {
+      _earns = true;
+      _incomeKind = incomeKinds.containsKey(income['source_type']) ? income['source_type'] as String : 'OTHER';
+      _incomeAmount.text = toDouble(income['amount']).toStringAsFixed(toDouble(income['amount']) == toDouble(income['amount']).roundToDouble() ? 0 : 2);
+      _incomeFrequency = (income['frequency']?.toString() ?? 'QUARTERLY', toInt(income['interval_count'], 1));
+      _incomeDate = toDate(income['next_date']) ?? toDate(income['start_date']);
+      _incomeAccount = income['account_id']?.toString();
+      _autoAdd = income['auto_add'] != false;
+    }
+    if (_canEarn) _loadAccounts();
   }
+
+  Future<void> _loadAccounts() async {
+    try {
+      final list = await context.services.accounts.list();
+      if (!mounted) return;
+      setState(() {
+        _accounts = list.where((a) => a['is_active'] != false).toList();
+        if (_incomeAccount == null && _accounts.isNotEmpty) _incomeAccount = _accounts.first['id'].toString();
+      });
+    } catch (_) {}
+  }
+
+  /// A sensible kind of income for the asset class.
+  static String _kindFor(String? assetClass) => switch (assetClass) {
+        'FIXED_INCOME' || 'CASH_EQUIVALENT' => 'INTEREST',
+        'REAL_ESTATE' => 'RENTAL_INCOME',
+        'EQUITY' || 'MUTUAL_FUND' => 'DIVIDEND',
+        _ => 'OTHER',
+      };
 
   @override
   void dispose() {
-    for (final c in [_name, _invested, _current, _quantity, _ticker, _notes]) {
+    for (final c in [_name, _invested, _current, _quantity, _ticker, _notes, _incomeAmount]) {
       c.dispose();
     }
     super.dispose();
@@ -273,6 +436,18 @@ class _AssetFormState extends State<AssetForm> {
             'purchase_date': _purchaseDate == null ? null : apiDate(_purchaseDate!),
             'notes': _notes.text.trim().isEmpty ? null : _notes.text.trim(),
             'meta_data': meta,
+            if (_canEarn)
+              'income': !_earns
+                  ? null
+                  : {
+                      'source_type': _incomeKind,
+                      'amount': parseAmount(_incomeAmount),
+                      'frequency': _incomeFrequency.$1,
+                      'interval_count': _incomeFrequency.$2,
+                      'start_date': apiDate(_incomeDate!),
+                      'account_id': _incomeAccount,
+                      'auto_add': _autoAdd,
+                    },
           };
           if (_isEdit) {
             await context.services.assets.update(widget.existing!['id'].toString(), payload);
@@ -299,6 +474,60 @@ class _AssetFormState extends State<AssetForm> {
     }
   }
 
+  List<Widget> _incomeFields(Money money) {
+    final theme = Theme.of(context);
+    final frequencies = {
+      for (final e in incomeFrequencies.entries) e.value: e.key,
+      if (!incomeFrequencies.values.contains(_incomeFrequency)) _incomeFrequency: incomeFrequencyLabel(_incomeFrequency.$1, _incomeFrequency.$2),
+    };
+    return [
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Pays regular income'),
+        subtitle: const Text('Dividend, interest, rent…'),
+        value: _earns,
+        onChanged: (v) => setState(() {
+          _earns = v;
+          if (v && widget.existing?['income'] == null) {
+            _incomeKind = _kindFor(_class);
+            if (_incomeKind == 'INTEREST' || _incomeKind == 'RENTAL_INCOME') _incomeFrequency = ('MONTHLY', 1);
+          }
+        }),
+      ),
+      if (_earns) ...[
+        if (_accounts.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Text('Add a bank account in Money first, so Finverse knows where this income goes.',
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error)),
+          ),
+        DropdownInput<String>(label: 'Type of income', value: _incomeKind, items: incomeKinds, onChanged: (v) => setState(() => _incomeKind = v ?? _incomeKind)),
+        AmountField(controller: _incomeAmount, label: 'Amount each time', prefix: money.symbol),
+        DropdownInput<(String, int)>(
+          label: 'How often',
+          value: _incomeFrequency,
+          items: frequencies,
+          onChanged: (v) => setState(() => _incomeFrequency = v ?? _incomeFrequency),
+        ),
+        DateInput(label: 'Next payment date', value: _incomeDate, firstDate: DateTime(2000), lastDate: DateTime(DateTime.now().year + 30), onChanged: (d) => setState(() => _incomeDate = d)),
+        DropdownInput<String>(
+          label: 'Paid into',
+          value: _incomeAccount,
+          items: {for (final a in _accounts) a['id'].toString(): a['name'].toString()},
+          onChanged: (v) => setState(() => _incomeAccount = v),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Add to Money automatically'),
+          subtitle: const Text('On each payment date, as income in the account above. Turn off to mark it received yourself.'),
+          value: _autoAdd,
+          onChanged: (v) => setState(() => _autoAdd = v),
+        ),
+        const SizedBox(height: 8),
+      ],
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     final money = context.read<AppState>().money;
@@ -314,6 +543,7 @@ class _AssetFormState extends State<AssetForm> {
         AmountField(controller: _quantity, label: 'Quantity / units (optional)', required: false),
         DateInput(label: 'Purchase date (optional)', value: _purchaseDate, required: false, lastDate: DateTime.now(), onChanged: (d) => setState(() => _purchaseDate = d)),
         TextInput(controller: _notes, label: 'Notes (optional)', maxLines: 2),
+        if (_canEarn) ..._incomeFields(money),
         SaveButton(busy: _busy, onPressed: _save, label: _isEdit ? 'Save changes' : 'Add asset'),
         if (_isEdit) ...[
           const SizedBox(height: 8),

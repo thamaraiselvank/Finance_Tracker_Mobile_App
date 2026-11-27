@@ -1136,11 +1136,11 @@ class InsightEngine {
           'net_worth': _amount(r['net_worth_minor'] as int),
           'assets': _amount(r['assets_minor'] as int),
           'liabilities': _amount(r['liabilities_minor'] as int),
+          'invested': _amount(r['invested_minor'] as int),
         };
+    // Every reading (one a day at most), so the chart can show any range.
     final history = [
-      for (final r in _db.query('SELECT * FROM wealth_snapshots WHERE date >= ? AND date <= ? ORDER BY date',
-          [dateOnly(today.subtract(const Duration(days: 365))), dateOnly(today)]))
-        reading(r),
+      for (final r in _db.query('SELECT * FROM wealth_snapshots WHERE date <= ? ORDER BY date', [dateOnly(today)])) reading(r),
     ];
     final now = _snapshot('WHERE date <= ? ORDER BY date DESC', [dateOnly(today)]);
     Json? since(Row? then) => then == null || now == null || then['date'] == now['date']

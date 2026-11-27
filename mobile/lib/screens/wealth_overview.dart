@@ -1,4 +1,5 @@
 import 'package:fl_chart/fl_chart.dart';
+import 'package:intl/intl.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:provider/provider.dart';
 
@@ -19,123 +20,248 @@ const _accountTypes = {
   'OTHER': 'Other',
 };
 
-/// Net worth over the last year, with the change over a month, three
-/// months and since the first reading.
-class NetWorthTrendCard extends StatelessWidget {
+/// Net worth over time, with a choice of time frame (1M, 3M, 6M, 1Y, All),
+/// the change over that time, and an optional assets / debts view.
+class NetWorthTrendCard extends StatefulWidget {
   const NetWorthTrendCard({super.key, required this.overview});
   final Json overview;
+
+  @override
+  State<NetWorthTrendCard> createState() => _NetWorthTrendCardState();
+}
+
+/// Time frames: label -> days back (null = everything).
+const _ranges = {'1M': 30, '3M': 91, '6M': 182, '1Y': 365, 'All': null};
+
+class _NetWorthTrendCardState extends State<NetWorthTrendCard> {
+  String _range = '3M';
+  bool _split = false;
+
+  List<Json> get _history => (widget.overview['history'] as List).cast<Json>();
+
+  List<Json> _inRange(List<Json> history) {
+    final days = _ranges[_range];
+    if (days == null || history.isEmpty) return history;
+    final last = toDate(history.last['date'])!;
+    final from = last.subtract(Duration(days: days));
+    return history.where((h) => !toDate(h['date'])!.isBefore(from)).toList();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    // Start on the shortest range that has a few readings.
+    final h = _history;
+    for (final r in _ranges.keys) {
+      _range = r;
+      if (_inRange(h).length >= 5) break;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     final theme = Theme.of(context);
-    final history = (overview['history'] as List).cast<Json>();
-    final changes = overview['changes'] as Json;
+    final history = _history;
+    final shown = _inRange(history);
     final muted = theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline);
     String c(dynamic v) => state.money.compact(v, hidden: state.hideAmounts);
 
-    Widget chip(String label, Json? change) {
-      if (change == null) return const SizedBox.shrink();
-      final diff = toDouble(change['to']) - toDouble(change['from']);
-      final base = toDouble(change['from']).abs();
-      final color = diff >= 0 ? AppColors.income : AppColors.expense;
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: theme.textTheme.labelSmall),
-          Text(
-            '${diff >= 0 ? '+' : '−'}${c(diff.abs())}${base > 0 ? ' · ${(diff / base * 100).abs().toStringAsFixed(1)}%' : ''}',
-            style: TextStyle(color: color, fontWeight: FontWeight.w700, fontSize: 12),
+    if (history.length < 2) {
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            'Finverse notes your net worth each day you open the app. After a few days, a chart of how it grows shows up here.',
+            style: muted,
           ),
-        ]),
+        ),
       );
     }
 
-    final chips = [
-      chip('1 month', changes['month'] as Json?),
-      chip('3 months', changes['quarter'] as Json?),
-      if (changes['start'] != null) chip('Since ${shortDate(toDate((changes['start'] as Json)['date']))}', changes['start'] as Json?),
-    ];
+    final first = shown.isEmpty ? null : shown.first;
+    final last = shown.isEmpty ? null : shown.last;
+    final diff = first == null ? 0.0 : toDouble(last!['net_worth']) - toDouble(first['net_worth']);
+    final base = first == null ? 0.0 : toDouble(first['net_worth']).abs();
+    final color = diff >= 0 ? AppColors.income : AppColors.expense;
+    final span = first == null ? 0 : toDate(last!['date'])!.difference(toDate(first['date'])!).inDays;
 
     return Card(
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (history.length >= 2) ...[
-            SizedBox(height: 150, child: _chart(context, history)),
-            const SizedBox(height: 12),
-            Wrap(spacing: 8, runSpacing: 8, children: chips),
-          ] else
-            Text(
-              'Finverse notes your net worth each day you open the app. After a few days, a chart of how it grows shows up here.',
-              style: muted,
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(c(last?['net_worth'] ?? history.last['net_worth']), style: theme.textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w800)),
+                if (shown.length >= 2)
+                  Row(children: [
+                    Icon(diff >= 0 ? Icons.arrow_upward : Icons.arrow_downward, size: 14, color: color),
+                    Flexible(
+                      child: Text(
+                        ' ${c(diff.abs())}${base > 0 ? ' (${(diff / base * 100).abs().toStringAsFixed(1)}%)' : ''} · ${_spanLabel(span)}',
+                        style: theme.textTheme.bodySmall?.copyWith(color: color, fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                  ]),
+              ]),
             ),
+            IconButton(
+              tooltip: _split ? 'Show net worth only' : 'Show assets and debts',
+              onPressed: () => setState(() => _split = !_split),
+              icon: Icon(_split ? Icons.show_chart : Icons.stacked_line_chart),
+            ),
+          ]),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 190,
+            child: shown.length < 2
+                ? Center(child: Text('Not enough readings in this time frame yet', style: muted))
+                : _chart(context, shown, color),
+          ),
+          if (_split && shown.length >= 2) ...[
+            const SizedBox(height: 6),
+            Wrap(spacing: 14, children: [
+              _legend(theme.colorScheme.primary, 'Net worth'),
+              _legend(AppColors.income, 'Assets'),
+              _legend(AppColors.expense, 'Debts'),
+            ]),
+          ],
+          const SizedBox(height: 10),
+          SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<String>(
+              showSelectedIcon: false,
+              style: const ButtonStyle(visualDensity: VisualDensity.compact, tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              segments: [for (final r in _ranges.keys) ButtonSegment(value: r, label: Text(r))],
+              selected: {_range},
+              onSelectionChanged: (v) => setState(() => _range = v.first),
+            ),
+          ),
         ]),
       ),
     );
   }
 
-  Widget _chart(BuildContext context, List<Json> history) {
+  static String _spanLabel(int days) {
+    if (days < 1) return 'today';
+    if (days < 45) return 'in $days day${days == 1 ? '' : 's'}';
+    if (days < 340) return 'in ${(days / 30.4).round()} months';
+    final years = days / 365;
+    return years < 1.5 ? 'in a year' : 'in ${years.toStringAsFixed(1)} years';
+  }
+
+  Widget _legend(Color color, String label) => Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(width: 10, height: 3, color: color),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 12)),
+      ]);
+
+  Widget _chart(BuildContext context, List<Json> history, Color color) {
     final state = context.read<AppState>();
     final theme = Theme.of(context);
     final first = toDate(history.first['date'])!;
-    final spots = [
-      for (final h in history) FlSpot(toDate(h['date'])!.difference(first).inDays.toDouble(), toDouble(h['net_worth'])),
-    ];
-    var minY = spots.map((s) => s.y).reduce((a, b) => a < b ? a : b);
-    var maxY = spots.map((s) => s.y).reduce((a, b) => a > b ? a : b);
-    final pad = (maxY - minY).abs() < 1 ? (maxY.abs() * 0.05 + 1) : (maxY - minY) * 0.1;
+    double x(Json h) => toDate(h['date'])!.difference(first).inDays.toDouble();
+    List<FlSpot> line(String key, {double sign = 1}) => [for (final h in history) FlSpot(x(h), sign * toDouble(h[key]))];
+
+    final net = line('net_worth');
+    final assets = _split ? line('assets') : const <FlSpot>[];
+    final debts = _split ? line('liabilities') : const <FlSpot>[];
+    final all = [...net, ...assets, ...debts];
+    var minY = all.map((s) => s.y).reduce((a, b) => a < b ? a : b);
+    var maxY = all.map((s) => s.y).reduce((a, b) => a > b ? a : b);
+    final pad = (maxY - minY).abs() < 1 ? (maxY.abs() * 0.05 + 1) : (maxY - minY) * 0.12;
     minY -= pad;
     maxY += pad;
-    final up = spots.last.y >= spots.first.y;
-    final color = up ? AppColors.income : AppColors.expense;
-    return LineChart(LineChartData(
-      minY: minY,
-      maxY: maxY,
-      gridData: const FlGridData(show: false),
-      borderData: FlBorderData(show: false),
-      titlesData: FlTitlesData(
-        leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-        bottomTitles: AxisTitles(
-          sideTitles: SideTitles(
-            showTitles: true,
-            reservedSize: 20,
-            interval: (spots.last.x / 3).clamp(1, double.infinity),
-            getTitlesWidget: (value, meta) => Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(shortDate(first.add(Duration(days: value.round()))),
-                  style: theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline)),
-            ),
-          ),
-        ),
-      ),
-      lineTouchData: LineTouchData(
-        touchTooltipData: LineTouchTooltipData(
-          getTooltipColor: (_) => theme.colorScheme.inverseSurface,
-          getTooltipItems: (spots) => [
-            for (final s in spots)
-              LineTooltipItem(
-                '${shortDate(first.add(Duration(days: s.x.round())))}\n${state.money.compact(s.y, hidden: state.hideAmounts)}',
-                TextStyle(color: theme.colorScheme.onInverseSurface, fontSize: 12),
-              ),
-          ],
-        ),
-      ),
-      lineBarsData: [
-        LineChartBarData(
+    if (_split && minY > 0) minY = 0;
+    final lastX = net.last.x;
+    final netColor = _split ? theme.colorScheme.primary : color;
+    final labelStyle = theme.textTheme.labelSmall?.copyWith(color: theme.colorScheme.outline, fontSize: 10);
+
+    LineChartBarData bar(List<FlSpot> spots, Color c, {bool fill = false, double width = 2.5, bool dashed = false}) => LineChartBarData(
           spots: spots,
           isCurved: true,
           preventCurveOverShooting: true,
-          color: color,
-          barWidth: 2.5,
+          color: c,
+          barWidth: width,
+          dashArray: dashed ? [5, 4] : null,
           dotData: FlDotData(show: spots.length < 3),
-          belowBarData: BarAreaData(show: true, color: color.withValues(alpha: 0.12)),
+          belowBarData: BarAreaData(
+            show: fill,
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [c.withValues(alpha: 0.28), c.withValues(alpha: 0.0)],
+            ),
+          ),
+        );
+
+    return LineChart(
+      LineChartData(
+        minY: minY,
+        maxY: maxY,
+        minX: 0,
+        maxX: lastX <= 0 ? 1 : lastX,
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          horizontalInterval: (maxY - minY) / 4 <= 0 ? 1 : (maxY - minY) / 4,
+          getDrawingHorizontalLine: (_) => FlLine(color: theme.dividerColor.withValues(alpha: 0.25), strokeWidth: 1),
         ),
-      ],
-    ));
+        borderData: FlBorderData(show: false),
+        titlesData: FlTitlesData(
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: !state.hideAmounts,
+              reservedSize: 46,
+              interval: (maxY - minY) / 4 <= 0 ? 1 : (maxY - minY) / 4,
+              getTitlesWidget: (value, meta) => value == meta.max || value == meta.min
+                  ? const SizedBox.shrink()
+                  : Text(state.money.compact(value), style: labelStyle, maxLines: 1),
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 22,
+              interval: lastX <= 0 ? 1 : (lastX / 3).clamp(1, double.infinity),
+              getTitlesWidget: (value, meta) {
+                final d = first.add(Duration(days: value.round()));
+                final long = lastX > 300;
+                return Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(long ? DateFormat("MMM ''yy").format(d) : shortDate(d), style: labelStyle),
+                );
+              },
+            ),
+          ),
+        ),
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            fitInsideHorizontally: true,
+            fitInsideVertically: true,
+            getTooltipColor: (_) => theme.colorScheme.inverseSurface,
+            getTooltipItems: (spots) => [
+              for (var i = 0; i < spots.length; i++)
+                LineTooltipItem(
+                  '${i == 0 ? '${shortDate(first.add(Duration(days: spots[i].x.round())))}\n' : ''}'
+                  '${_split ? '${switch (spots[i].barIndex) { 0 => 'Net worth', 1 => 'Assets', _ => 'Debts' }}: ' : ''}'
+                  '${state.money.compact(spots[i].y, hidden: state.hideAmounts)}',
+                  TextStyle(color: theme.colorScheme.onInverseSurface, fontSize: 12),
+                ),
+            ],
+          ),
+        ),
+        lineBarsData: [
+          bar(net, netColor, fill: true, width: 3),
+          if (_split) bar(assets, AppColors.income, width: 2, dashed: true),
+          if (_split) bar(debts, AppColors.expense, width: 2, dashed: true),
+        ],
+      ),
+      duration: const Duration(milliseconds: 350),
+    );
   }
 }
 

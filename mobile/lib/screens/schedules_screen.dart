@@ -22,6 +22,59 @@ Future<List<Map<String, dynamic>>> loadUpcomingOccurrences(BuildContext context,
   );
 }
 
+/// "Mark as received / paid" for one due date: asks for the actual amount
+/// and date, then records the transaction. True when it was recorded.
+Future<bool> markOccurrenceDone(BuildContext context, Map<String, dynamic> o) async {
+  final money = context.read<AppState>().money;
+  final amount = TextEditingController(text: toDouble(o['amount']).toStringAsFixed(0));
+  final formKey = GlobalKey<FormState>();
+  var date = DateTime.now();
+  final isIncome = o['flow_type'] == 'INCOME';
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setLocal) => AlertDialog(
+        title: Text(isIncome ? 'Mark as received' : 'Mark as paid'),
+        content: SingleChildScrollView(child: Form(
+          key: formKey,
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('${o['description']} – due ${displayDate(toDate(o['occurrence_date']))}'),
+            const SizedBox(height: 14),
+            AmountField(controller: amount, label: 'Actual amount', prefix: money.symbol),
+            DateInput(label: 'Date', value: date, lastDate: DateTime.now(), onChanged: (d) => setLocal(() => date = d ?? date)),
+            Text('A matching ${isIncome ? 'income' : 'expense'} transaction will be added to ${o['account_name'] ?? 'the account'}.', style: Theme.of(ctx).textTheme.bodySmall),
+          ]),
+        )),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(minimumSize: const Size(80, 40)),
+            onPressed: () {
+              if (formKey.currentState!.validate()) Navigator.pop(ctx, true);
+            },
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    ),
+  );
+  if (ok != true || !context.mounted) return false;
+  try {
+    await context.services.schedules.completeOccurrence(
+      o['schedule_id'].toString(),
+      toDate(o['occurrence_date'])!,
+      actualAmount: double.parse(amount.text),
+      actualDate: date,
+    );
+    if (!context.mounted) return true;
+    context.showSnack(isIncome ? 'Marked as received' : 'Marked as paid');
+    return true;
+  } catch (e) {
+    if (context.mounted) context.showSnack(e.toString(), error: true);
+    return false;
+  }
+}
+
 class SchedulesScreen extends StatelessWidget {
   const SchedulesScreen({super.key});
 
@@ -62,53 +115,7 @@ class _UpcomingTabState extends State<_UpcomingTab> with AutomaticKeepAliveClien
   bool get wantKeepAlive => true;
 
   Future<void> _markDone(Map<String, dynamic> o) async {
-    final money = context.read<AppState>().money;
-    final amount = TextEditingController(text: toDouble(o['amount']).toStringAsFixed(0));
-    final formKey = GlobalKey<FormState>();
-    var date = DateTime.now();
-    final isIncome = o['flow_type'] == 'INCOME';
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          title: Text(isIncome ? 'Mark as received' : 'Mark as paid'),
-          content: SingleChildScrollView(child: Form(
-            key: formKey,
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              Text('${o['description']} – due ${displayDate(toDate(o['occurrence_date']))}'),
-              const SizedBox(height: 14),
-              AmountField(controller: amount, label: 'Actual amount', prefix: money.symbol),
-              DateInput(label: 'Date', value: date, lastDate: DateTime.now(), onChanged: (d) => setLocal(() => date = d ?? date)),
-              Text('A matching ${isIncome ? 'income' : 'expense'} transaction will be added to ${o['account_name'] ?? 'the account'}.', style: Theme.of(ctx).textTheme.bodySmall),
-            ]),
-          )),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            FilledButton(
-              style: FilledButton.styleFrom(minimumSize: const Size(80, 40)),
-              onPressed: () {
-                if (formKey.currentState!.validate()) Navigator.pop(ctx, true);
-              },
-              child: const Text('Confirm'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (ok != true || !mounted) return;
-    try {
-      await context.services.schedules.completeOccurrence(
-        o['schedule_id'].toString(),
-        toDate(o['occurrence_date'])!,
-        actualAmount: double.parse(amount.text),
-        actualDate: date,
-      );
-      if (!mounted) return;
-      context.showSnack(isIncome ? 'Marked as received' : 'Marked as paid');
-      _viewKey.currentState?.reload();
-    } catch (e) {
-      if (mounted) context.showSnack(e.toString(), error: true);
-    }
+    if (await markOccurrenceDone(context, o)) _viewKey.currentState?.reload();
   }
 
   @override

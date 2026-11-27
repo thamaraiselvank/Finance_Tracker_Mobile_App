@@ -22,16 +22,38 @@ double _f(Object? minor) => minor == null ? 0.0 : fromMinor(minor as int);
 
 const assetClasses = {'EQUITY', 'MUTUAL_FUND', 'COMMODITY_GOLD', 'REAL_ESTATE', 'CASH_EQUIVALENT', 'FIXED_INCOME', 'CRYPTO', 'OTHER'};
 
+/// Kinds of regular income a holding can pay (schedule source types).
+const assetIncomeKinds = {'DIVIDEND': 'Dividend', 'INTEREST': 'Interest', 'RENTAL_INCOME': 'Rent', 'OTHER': 'Income'};
+
+const _investmentReturnsCategory = '00000000-0000-0000-0000-000000000002';
+const _rentalIncomeCategory = '00000000-0000-0000-0000-000000000004';
+
+/// How many times a year a schedule pays.
+double paymentsPerYear(String frequency, int interval) => switch (frequency) {
+      'WEEKLY' => 52 / interval,
+      'MONTHLY' => 12 / interval,
+      'QUARTERLY' => 4 / interval,
+      _ => 1 / interval,
+    };
+
 class LocalAssetsService implements AssetsService {
-  LocalAssetsService(this._db, {http.Client? client}) : _client = client ?? http.Client();
+  LocalAssetsService(this._db, {http.Client? client, DateTime Function()? today})
+      : _client = client ?? http.Client(),
+        _clock = today ?? DateTime.now;
   final LocalDb _db;
   final http.Client _client;
+  final DateTime Function() _clock;
 
   /// Net worth: holdings + active account balances − debts, with totals per
   /// asset class (largest holdings first).
   @override
   Future<Json> summary() async {
-    final assets = _db.query('SELECT * FROM assets ORDER BY current_value_minor DESC, rowid ASC').map(assetOut).toList();
+    await recordDueIncome();
+    final incomeByAsset = _incomeSchedules();
+    final assets = [
+      for (final a in _db.query('SELECT * FROM assets ORDER BY current_value_minor DESC, rowid ASC').map(assetOut))
+        {...a, 'income': incomeByAsset[a['id']]},
+    ];
     var accountBalance = 0.0;
     for (final a in _db.query('SELECT balance_minor FROM accounts WHERE is_active = 1')) {
       accountBalance += fromMinor(a['balance_minor'] as int);
@@ -64,6 +86,7 @@ class LocalAssetsService implements AssetsService {
       'total_liabilities_outstanding': pyRound(liabilities, 2),
       'total_monthly_emi': pyRound(emi, 2),
       'net_worth': pyRound(totalCurrent - liabilities, 2),
+      'passive_income': _passiveIncome(incomeByAsset),
       'asset_classes': [
         for (final MapEntry(key: assetClass, value: items) in groups.entries) _classSummary(assetClass, items, totalCurrent),
       ],
@@ -104,14 +127,23 @@ class LocalAssetsService implements AssetsService {
     final current = currentPrice > 0 && quantity != 0 ? pyRound(quantity * currentPrice, 2) : currentValue;
     final investedAmount = buyPrice > 0 && quantity != 0 && invested == 0 ? pyRound(quantity * buyPrice, 2) : invested;
     final ts = nowTimestamp();
+    final id = newId();
     _db.execute('''
       INSERT INTO assets (id, name, asset_class, sub_type, invested_minor, current_value_minor, quantity, buy_price_minor,
                           current_price_minor, purchase_date, notes, meta_data, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', [
-      newId(), name, assetClass, readString(asset, 'sub_type'), toMinor(investedAmount), toMinor(current),
+      id, name, assetClass, readString(asset, 'sub_type'), toMinor(investedAmount), toMinor(current),
       quantity == 0 ? 1.0 : _q(quantity), toMinor(buyPrice), toMinor(currentPrice), readDate(asset, 'purchase_date'),
       readString(asset, 'notes'), jsonEncode(_meta(asset) ?? const {}), ts, ts,
     ]);
+    if (asset.containsKey('income')) {
+      try {
+        await _saveIncome(id, name, asset['income']);
+      } catch (_) {
+        _db.execute('DELETE FROM assets WHERE id = ?', [id]); // nothing half-saved
+        rethrow;
+      }
+    }
   }
 
   @override
@@ -134,19 +166,217 @@ class LocalAssetsService implements AssetsService {
     if (has('purchase_date')) columns['purchase_date'] = readDate(changes, 'purchase_date');
     if (has('notes')) columns['notes'] = readString(changes, 'notes');
     if (has('meta_data') && changes['meta_data'] != null) columns['meta_data'] = jsonEncode(_meta(changes));
-    if (columns.isEmpty) return;
-    columns['updated_at'] = nowTimestamp();
-    _db.execute('UPDATE assets SET ${columns.keys.map((c) => '$c = ?').join(', ')} WHERE id = ?', [...columns.values, id]);
+    if (columns.isNotEmpty) {
+      columns['updated_at'] = nowTimestamp();
+      _db.execute('UPDATE assets SET ${columns.keys.map((c) => '$c = ?').join(', ')} WHERE id = ?', [...columns.values, id]);
+    }
+    if (has('income')) {
+      final name = _db.queryOne('SELECT name FROM assets WHERE id = ?', [id])!['name'] as String;
+      await _saveIncome(id, name, changes['income']);
+    }
   }
 
+  /// Also stops the holding's income schedule (payouts already recorded
+  /// stay in Money).
   @override
   Future<void> delete(String id) async {
-    _db.execute('DELETE FROM assets WHERE id = ?', [id]);
-    if (_db.changes == 0) throw const NotFoundException('Asset not found.');
+    _db.transaction(() {
+      _removeIncome(id);
+      _db.execute('DELETE FROM assets WHERE id = ?', [id]);
+      if (_db.changes == 0) throw const NotFoundException('Asset not found.');
+    });
   }
 
   @override
-  Future<void> deleteAll() async => _db.execute('DELETE FROM assets');
+  Future<void> deleteAll() async => _db.transaction(() {
+        for (final a in _db.query('SELECT id FROM assets')) {
+          _removeIncome(a['id'] as String);
+        }
+        _db.execute('DELETE FROM assets');
+      });
+
+  // ---- Income from holdings (dividend, interest, rent) ----------------------
+  //
+  // Saved as an INCOME schedule (Bills & recurring) linked to the asset, so it
+  // shows in the calendar and can be marked received there too. `income` is:
+  //   {source_type, amount, frequency, interval_count, start_date, account_id, auto_add}
+  // or null to stop it. With auto_add, each payout from the day it was set up
+  // is added to Money on its date (see [recordDueIncome]).
+
+  Future<void> _saveIncome(String assetId, String assetName, Object? income) async {
+    if (income == null || income == false) {
+      _db.transaction(() => _removeIncome(assetId));
+      return;
+    }
+    if (income is! Map) throw ValidationException('income', 'Input should be a valid dictionary');
+    final i = Map<String, dynamic>.from(income);
+    final kind = readString(i, 'source_type') ?? 'DIVIDEND';
+    if (!assetIncomeKinds.containsKey(kind)) throw ValidationException('income', 'Choose dividend, interest, rent or other income');
+    final category = kind == 'RENTAL_INCOME' ? _rentalIncomeCategory : _investmentReturnsCategory;
+    final hasCategory = _db.queryOne("SELECT id FROM categories WHERE id = ? AND type = 'INCOME'", [category]) != null;
+    final schedule = {
+      'account_id': i['account_id'],
+      'category_id': hasCategory ? category : null,
+      'asset_id': assetId,
+      'description': '${assetIncomeKinds[kind]}: $assetName',
+      'flow_type': 'INCOME',
+      'source_type': kind,
+      'amount': i['amount'],
+      'amount_is_estimate': true,
+      'frequency': i['frequency'] ?? 'QUARTERLY',
+      'interval_count': i['interval_count'] ?? 1,
+      'start_date': i['start_date'],
+      'end_date': null,
+      'is_active': true,
+    };
+    final schedules = LocalSchedulesService(_db);
+    final existing = _db.queryOne('SELECT id FROM scheduled_cashflows WHERE asset_id = ? ORDER BY is_active DESC, created_at DESC LIMIT 1', [assetId]);
+    if (existing == null) {
+      await schedules.create(schedule);
+    } else {
+      await schedules.update(existing['id'] as String, schedule);
+    }
+    _setAutoIncome(assetId, readBool(i, 'auto_add') ?? true);
+  }
+
+  /// Deletes the asset's income schedules, or only switches them off when
+  /// payouts were already recorded (so Money keeps its history).
+  void _removeIncome(String assetId) {
+    for (final s in _db.query('SELECT id FROM scheduled_cashflows WHERE asset_id = ?', [assetId])) {
+      final used = _db.queryOne('SELECT id FROM transactions WHERE scheduled_cashflow_id = ? LIMIT 1', [s['id']]) != null;
+      if (used) {
+        _db.execute('UPDATE scheduled_cashflows SET is_active = 0, updated_at = ? WHERE id = ?', [nowTimestamp(), s['id']]);
+      } else {
+        _db.execute('DELETE FROM scheduled_cashflows WHERE id = ?', [s['id']]);
+      }
+    }
+    _setAutoIncome(assetId, null);
+  }
+
+  void _setAutoIncome(String assetId, bool? auto) {
+    final row = _db.queryOne('SELECT meta_data FROM assets WHERE id = ?', [assetId]);
+    if (row == null) return;
+    final meta = _parseMeta(row['meta_data']);
+    if (auto == null) {
+      if (!meta.containsKey('income_auto_add')) return;
+      meta.remove('income_auto_add');
+    } else {
+      meta['income_auto_add'] = auto;
+    }
+    _db.execute('UPDATE assets SET meta_data = ? WHERE id = ?', [jsonEncode(meta), assetId]);
+  }
+
+  /// Active income schedules by asset id, with yearly amount and next date.
+  Map<String, Json> _incomeSchedules() {
+    final today = _today();
+    final out = <String, Json>{};
+    for (final s in _db.query('''
+        SELECT s.*, a.name AS account_name, asset.meta_data AS asset_meta FROM scheduled_cashflows s
+        JOIN assets asset ON asset.id = s.asset_id
+        LEFT JOIN accounts a ON a.id = s.account_id
+        WHERE s.is_active = 1 AND s.flow_type = 'INCOME' ORDER BY s.created_at''')) {
+      final amount = fromMinor(s['amount_minor'] as int);
+      final frequency = s['frequency'] as String;
+      final interval = s['interval_count'] as int;
+      final r = Recurrence(
+        frequency: frequency,
+        intervalCount: interval,
+        start: DateTime.parse(s['start_date'] as String),
+        end: s['end_date'] == null ? null : DateTime.parse(s['end_date'] as String),
+      );
+      var index = r.indexOnOrBefore(today);
+      var next = r.at(index);
+      while (next.isBefore(today)) {
+        next = r.at(++index);
+      }
+      final ended = r.end != null && next.isAfter(r.end!);
+      out[s['asset_id'] as String] = {
+        'schedule_id': s['id'],
+        'source_type': s['source_type'],
+        'amount': amount,
+        'frequency': frequency,
+        'interval_count': interval,
+        'start_date': s['start_date'],
+        'account_id': s['account_id'],
+        'account_name': s['account_name'],
+        'auto_add': _parseMeta(s['asset_meta'])['income_auto_add'] != false,
+        'yearly': ended ? 0.0 : pyRound(amount * paymentsPerYear(frequency, interval), 2),
+        'next_date': ended ? null : dateOnly(next),
+      };
+    }
+    return out;
+  }
+
+  /// Totals for the Wealth screen: expected a year and a month, received this
+  /// year, and payouts due soon or not yet marked received.
+  Json _passiveIncome(Map<String, Json> byAsset) {
+    final today = _today();
+    var yearly = 0.0;
+    for (final i in byAsset.values) {
+      yearly += i['yearly'] as double;
+    }
+    final ids = {for (final i in byAsset.values) i['schedule_id'] as String};
+    final allIds = [for (final r in _db.query('SELECT id FROM scheduled_cashflows WHERE asset_id IS NOT NULL')) r['id'] as String];
+    var received = 0;
+    if (allIds.isNotEmpty) {
+      received = _db.queryOne('''
+        SELECT COALESCE(SUM(amount_minor), 0) AS total FROM transactions
+        WHERE status <> 'IGNORED' AND type = 'INCOME' AND date >= ? AND date <= ?
+          AND scheduled_cashflow_id IN (${List.filled(allIds.length, '?').join(', ')})''',
+          [dateOnly(DateTime(today.year)), dateOnly(today), ...allIds])!['total'] as int;
+    }
+    final payouts = ids.isEmpty
+        ? const <Json>[]
+        : LocalSchedulesService(_db, today: _today)
+            .scheduleOccurrences(start: today.subtract(const Duration(days: 60)), end: today.add(const Duration(days: 120)))
+            .where((o) => ids.contains(o['schedule_id']) && o['status'] != 'received')
+            .take(8)
+            .toList();
+    return {
+      'yearly': pyRound(yearly, 2),
+      'monthly': pyRound(yearly / 12, 2),
+      'received_this_year': fromMinor(received),
+      'count': byAsset.length,
+      'payouts': payouts,
+    };
+  }
+
+  /// Adds due payouts to Money for holdings set to "add automatically":
+  /// every payout from the day the income was set up until today that is not
+  /// recorded yet, at the expected amount, on its own date.
+  Future<int> recordDueIncome() async {
+    final today = _today();
+    final schedules = LocalSchedulesService(_db, today: _today);
+    var added = 0;
+    for (final s in _db.query('''
+        SELECT s.id, s.created_at, s.start_date, s.amount_minor, asset.meta_data FROM scheduled_cashflows s
+        JOIN assets asset ON asset.id = s.asset_id
+        JOIN accounts a ON a.id = s.account_id AND a.is_active = 1
+        WHERE s.is_active = 1 AND s.flow_type = 'INCOME' AND s.start_date <= ?''', [dateOnly(today)])) {
+      if (_parseMeta(s['meta_data'])['income_auto_add'] == false) continue;
+      final setUp = DateTime.parse(s['created_at'] as String).toLocal();
+      var from = DateTime(setUp.year, setUp.month, setUp.day);
+      final earliest = today.subtract(const Duration(days: 360));
+      if (from.isBefore(earliest)) from = earliest;
+      if (from.isAfter(today)) continue;
+      for (final o in schedules.scheduleOccurrences(start: from, end: today)) {
+        if (o['schedule_id'] != s['id'] || o['status'] == 'received') continue;
+        final date = DateTime.parse(o['occurrence_date'] as String);
+        try {
+          await schedules.completeOccurrence(s['id'] as String, date, actualAmount: fromMinor(s['amount_minor'] as int), actualDate: date);
+          added++;
+        } on ServiceException {
+          // Already recorded or no longer valid: skip.
+        }
+      }
+    }
+    return added;
+  }
+
+  DateTime _today() {
+    final now = _clock();
+    return DateTime(now.year, now.month, now.day);
+  }
 
   /// Latest market prices for stocks, from Yahoo Finance's public quote
   /// service. Only ticker symbols are sent; nothing about the user.

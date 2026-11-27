@@ -38,6 +38,19 @@ double? _money(Object? minor) => minor == null ? null : fromMinor(minor as int);
 const goalTypes = {'RETIREMENT', 'DOWN_PAYMENT', 'DEBT_PAYOFF', 'WEALTH_BUILD', 'EDUCATION', 'VACATION', 'BUSINESS', 'EMERGENCY_FUND', 'OTHER'};
 const goalStatuses = {'ACTIVE', 'PAUSED', 'COMPLETED', 'ABANDONED'};
 
+/// Phone-only goal kinds for things to buy. Stored as goal_type 'OTHER' with
+/// goal_kind set (see schema v7), and reported back as the goal type.
+const goalKinds = {'CAR', 'BIKE', 'HOME', 'GADGET', 'WEDDING', 'GOLD'};
+
+/// (goal_type, goal_kind) columns for a chosen type.
+(String, String?) _goalTypeColumns(Json input) {
+  final value = _choice(input, 'goal_type', {...goalTypes, ...goalKinds}, 'goal type');
+  return goalKinds.contains(value) ? ('OTHER', value) : (value, null);
+}
+
+/// How many months of saving history each goal reports.
+const goalHistoryMonths = 6;
+
 class LocalGoalsService implements GoalsService {
   LocalGoalsService(this._db, {DateTime Function()? today}) : _today = today ?? DateTime.now;
   final LocalDb _db;
@@ -48,10 +61,31 @@ class LocalGoalsService implements GoalsService {
     final now = _today();
     final monthStart = DateTime(now.year, now.month).toUtc().toIso8601String();
     final monthEnd = DateTime(now.year, now.month + 1).toUtc().toIso8601String();
-    return _db.query('''
+    final goals = _db.query('''
       SELECT g.*, COALESCE((SELECT SUM(c.amount_minor) FROM goal_contributions c
                             WHERE c.goal_id = g.id AND c.contributed_at >= ? AND c.contributed_at < ?), 0) AS month_minor
       FROM goals g ORDER BY g.priority ASC, g.target_date ASC''', [monthStart, monthEnd]).map(_goalOut).toList();
+    if (goals.isEmpty) return goals;
+
+    // Saved per month (local calendar months), for "saved / missed" tracking.
+    final firstMonth = DateTime(now.year, now.month - (goalHistoryMonths - 1));
+    final byGoal = <String, Map<String, int>>{};
+    for (final c in _db.query('SELECT goal_id, amount_minor, contributed_at FROM goal_contributions WHERE contributed_at >= ?',
+        [firstMonth.toUtc().toIso8601String()])) {
+      final at = DateTime.parse(c['contributed_at'] as String).toLocal();
+      final key = _monthKey(DateTime(at.year, at.month));
+      final months = byGoal.putIfAbsent(c['goal_id'] as String, () => {});
+      months[key] = (months[key] ?? 0) + (c['amount_minor'] as int);
+    }
+    for (final g in goals) {
+      g['saving_history'] = goalSavingHistory(
+        g,
+        byGoal[g['id']] ?? const {},
+        today: DateTime(now.year, now.month, now.day),
+        months: goalHistoryMonths,
+      );
+    }
+    return goals;
   }
 
   @override
@@ -76,7 +110,7 @@ class LocalGoalsService implements GoalsService {
   @override
   Future<void> create(Json goal) async {
     final name = _name(goal, 'goal_name');
-    final type = _choice(goal, 'goal_type', goalTypes, 'goal type');
+    final (type, kind) = _goalTypeColumns(goal);
     final target = readNumber(goal, 'target_amount', required: true, gt: 0)!;
     final current = readNumber(goal, 'current_amount', ge: 0) ?? 0.0;
     final targetDate = readDate(goal, 'target_date', required: true)!;
@@ -93,10 +127,10 @@ class LocalGoalsService implements GoalsService {
     final progress = target > 0 ? math.min(current / target * 100, 100.0) : 0.0;
     final ts = nowTimestamp();
     _db.execute('''
-      INSERT INTO goals (id, goal_name, goal_type, target_amount_minor, current_amount_minor, target_date, priority, description,
+      INSERT INTO goals (id, goal_name, goal_type, goal_kind, target_amount_minor, current_amount_minor, target_date, priority, description,
                          suggested_monthly_minor, allocated_monthly_minor, progress_percentage, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', [
-      newId(), name, type, toMinor(target), toMinor(current), targetDate, priority, description,
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', [
+      newId(), name, type, kind, toMinor(target), toMinor(current), targetDate, priority, description,
       toMinor(suggested), toMinor(allocated), _dec2(progress), ts, ts,
     ]);
   }
@@ -109,7 +143,11 @@ class LocalGoalsService implements GoalsService {
     final columns = <String, Object?>{};
     bool given(String f) => changes[f] != null;
     if (given('goal_name')) columns['goal_name'] = readString(changes, 'goal_name');
-    if (given('goal_type')) columns['goal_type'] = _choice(changes, 'goal_type', goalTypes, 'goal type');
+    if (given('goal_type')) {
+      final (type, kind) = _goalTypeColumns(changes);
+      columns['goal_type'] = type;
+      columns['goal_kind'] = kind;
+    }
     if (given('target_amount')) columns['target_amount_minor'] = toMinor(readNumber(changes, 'target_amount', gt: 0)!);
     if (given('target_date')) columns['target_date'] = readDate(changes, 'target_date');
     if (given('priority')) columns['priority'] = readInt(changes, 'priority', ge: 1, le: 5);
@@ -158,7 +196,7 @@ class LocalGoalsService implements GoalsService {
         'id': r['id'],
         'user_id': localUserId,
         'goal_name': r['goal_name'],
-        'goal_type': r['goal_type'],
+        'goal_type': r['goal_kind'] ?? r['goal_type'],
         'target_amount': fromMinor(r['target_amount_minor'] as int),
         'current_amount': fromMinor(r['current_amount_minor'] as int),
         'target_date': r['target_date'],
@@ -172,6 +210,57 @@ class LocalGoalsService implements GoalsService {
         'created_at': r['created_at'],
         'updated_at': r['updated_at'],
       };
+}
+
+String _monthKey(DateTime m) => '${m.year}-${m.month.toString().padLeft(2, '0')}';
+
+/// The goal's last [months] calendar months, oldest first, each with how
+/// much was saved and whether that met the monthly plan:
+///   status 'met' (saved at least the plan), 'partial', 'missed', 'open'
+///   (this month, not met yet) or 'before' (before the goal was created,
+///   or the month it was created in when nothing was saved then).
+/// The plan is the allocated monthly saving, else the suggested one.
+/// Also gives `streak`: months in a row that met the plan, counting back
+/// from this month if it is already met, else from last month.
+Json goalSavingHistory(Json goal, Map<String, int> savedByMonth, {required DateTime today, int months = goalHistoryMonths}) {
+  final allocated = toMinor((goal['allocated_monthly_savings'] as num?)?.toDouble() ?? 0);
+  final suggested = toMinor((goal['suggested_monthly_savings'] as num?)?.toDouble() ?? 0);
+  final plan = allocated > 0 ? allocated : suggested;
+  final created = DateTime.tryParse(goal['created_at']?.toString() ?? '')?.toLocal();
+  final createdMonth = created == null ? null : DateTime(created.year, created.month);
+  final thisMonth = DateTime(today.year, today.month);
+  final out = <Json>[];
+  for (var i = months - 1; i >= 0; i--) {
+    final m = DateTime(today.year, today.month - i);
+    final saved = savedByMonth[_monthKey(m)] ?? 0;
+    final String status;
+    if (plan > 0 && saved >= plan) {
+      status = 'met';
+    } else if (m == thisMonth) {
+      status = saved > 0 && plan == 0 ? 'met' : 'open';
+    } else if (createdMonth != null && !m.isAfter(createdMonth) && saved == 0) {
+      status = 'before'; // the goal didn't exist yet (or was made late that month)
+    } else if (saved > 0) {
+      status = plan == 0 ? 'met' : 'partial';
+    } else {
+      status = 'missed';
+    }
+    out.add({'month': _monthKey(m), 'saved': fromMinor(saved), 'status': status});
+  }
+  var streak = 0;
+  var i = out.length - 1;
+  if (out[i]['status'] != 'met') i--;
+  for (; i >= 0 && out[i]['status'] == 'met'; i--) {
+    streak++;
+  }
+  final current = out.last;
+  return {
+    'plan': fromMinor(plan),
+    'this_month': current['saved'],
+    'left_this_month': plan > 0 ? fromMinor(math.max(0, plan - toMinor(current['saved'] as double))) : 0.0,
+    'streak': streak,
+    'months': out,
+  };
 }
 
 // ---------------------------------------------------------------------------
